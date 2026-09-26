@@ -16,6 +16,8 @@
 #     voidbr-iso-writer (tema escuro, botões coloridos, emojis). Lista os
 #     snapshots, mostra as alterações de cada atualização, cria, apaga e
 #     restaura snapshots, avisa quando o sistema foi iniciado num snapshot.
+#     Botões "🧰 Migrar" e "🧹 Concluir migração" abrem o migrate num terminal
+#     ($TERMINAL, foot, kitty, alacritty, xfce4-terminal, ...).
 #
 #   Permission is hereby granted, free of charge, to any person obtaining a copy
 #   of this software and associated documentation files (the "Software"), to deal
@@ -48,7 +50,9 @@ Requer: PyGObject (GTK4), polkit e o voidbr-snapper-manager.
 
 import csv
 import io
+import os
 import re
+import shutil
 import subprocess
 import threading
 
@@ -220,6 +224,31 @@ def sem_ansi(texto):
     return re.sub(r"\x1b\[[0-9;]*m", "", texto)
 
 
+def comando_terminal(cmd):
+    """Monta o argv para abrir `cmd` (string de shell) num emulador de terminal."""
+    shell = ["sh", "-c", cmd]
+    preferido = os.environ.get("TERMINAL", "")
+    candidatos = ([preferido] if preferido else []) + [
+        "xdg-terminal-exec", "foot", "kitty", "alacritty", "wezterm",
+        "xfce4-terminal", "konsole", "gnome-terminal", "xterm",
+    ]
+    for term in candidatos:
+        caminho = shutil.which(term)
+        if not caminho:
+            continue
+        nome = os.path.basename(caminho)
+        if nome in ("xdg-terminal-exec", "foot", "kitty"):
+            return [caminho, *shell]
+        if nome == "wezterm":
+            return [caminho, "start", "--", *shell]
+        if nome == "xfce4-terminal":
+            return [caminho, "-x", *shell]
+        if nome == "gnome-terminal":
+            return [caminho, "--", *shell]
+        return [caminho, "-e", *shell]  # alacritty, konsole, xterm e outros
+    return None
+
+
 def ler_status(texto):
     st = {}
     for linha in texto.splitlines():
@@ -324,7 +353,8 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
         self.label_setup = Gtk.Label(xalign=0, hexpand=True, wrap=True)
         self.botao_setup = Gtk.Button(label="⚙️ Configurar")
         self.botao_setup.add_css_class("botao-azul")
-        self.botao_setup.connect("clicked", self.ao_clicar_configurar)
+        self.acao_setup = self.ao_clicar_configurar
+        self.botao_setup.connect("clicked", lambda *_: self.acao_setup())
         self.caixa_setup.append(self.label_setup)
         self.caixa_setup.append(self.botao_setup)
         self.caixa_setup.set_visible(False)
@@ -463,22 +493,33 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
         self.caixa_boot.set_visible(bool(n))
 
         layout = st.get("layout")
-        texto, com_botao = None, True
+        texto, botao = None, None
         if not st or layout == "nobtrfs":
-            texto, com_botao = "⚠️ O / não está em btrfs. Os snapshots não estão disponíveis.", False
+            texto = "⚠️ O / não está em btrfs. Os snapshots não estão disponíveis."
         elif layout == "toplevel":
             texto = ("⚠️ O / está direto na raiz do btrfs, sem subvolumes.\n"
-                     "Converta pelo terminal: <tt>sudo voidbr-snapper-manager migrate</tt>")
-            com_botao = False
+                     "É preciso converter para o layout @, @home, @snapshots (migrate).")
+            botao = ("🧰 Migrar", "botao-laranja", self.ao_clicar_migrar)
         elif layout == "other":
-            texto, com_botao = ("⚠️ Layout btrfs não suportado "
-                                "(esperado: @, @home, @snapshots)."), False
+            texto = "⚠️ Layout btrfs não suportado (esperado: @, @home, @snapshots)."
+        elif layout == "flat" and st.get("migrate") == "pending":
+            texto = ("🧹 A migração foi feita. Falta apagar o sistema antigo que ficou "
+                     "na raiz do btrfs (migrate finish).")
+            botao = ("🧹 Concluir migração", "botao-laranja", self.ao_clicar_migrar_finish)
         elif layout == "flat" and (st.get("config") != "yes" or st.get("wheel") != "yes"
                                    or st.get("grub_btrfs") != "active"):
             texto = "⚙️ O sistema ainda não está configurado para os snapshots."
+            botao = ("⚙️ Configurar", "botao-azul", self.ao_clicar_configurar)
         if texto:
             self.label_setup.set_markup(texto)
-            self.botao_setup.set_visible(com_botao)
+            if botao:
+                rotulo, classe, acao = botao
+                self.botao_setup.set_label(rotulo)
+                for c in ("botao-azul", "botao-laranja"):
+                    self.botao_setup.remove_css_class(c)
+                self.botao_setup.add_css_class(classe)
+                self.acao_setup = acao
+            self.botao_setup.set_visible(botao is not None)
         self.caixa_setup.set_visible(texto is not None)
 
     def atualizar_status(self):
@@ -633,6 +674,41 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
                        "Reinicie e escolha a entrada NORMAL do sistema no menu de boot.",
                        "🔁 Reiniciar agora",
                        lambda: subprocess.Popen(["pkexec", "reboot"]))
+
+    def abrir_no_terminal(self, cmd):
+        argv = comando_terminal(
+            f"{cmd}; echo; printf 'Pressione Enter para fechar...'; read _")
+        if not argv:
+            self.erro("Nenhum terminal encontrado",
+                      f"Abra um terminal e rode:\n\n{cmd}")
+            return
+        try:
+            proc = subprocess.Popen(argv)
+        except OSError as e:
+            self.erro("Não foi possível abrir o terminal", str(e))
+            return
+
+        def esperar():
+            proc.wait()
+            GLib.idle_add(self.atualizar)
+        threading.Thread(target=esperar, daemon=True).start()
+
+    def ao_clicar_migrar(self, *_):
+        self.perguntar("🧰 Migrar para o layout @, @home, @snapshots?",
+                       "A migração abre num terminal, onde cada passo é mostrado e "
+                       "confirmado. Ela reinstala o GRUB e pede para reiniciar.\n\n"
+                       "⚠️ Faça um backup antes de continuar.",
+                       "🧰 Abrir terminal",
+                       lambda: self.abrir_no_terminal(
+                           f"sudo {CLI} migrate"))
+
+    def ao_clicar_migrar_finish(self, *_):
+        self.perguntar("🧹 Concluir a migração?",
+                       "Abre um terminal que lista e apaga o sistema antigo da raiz do "
+                       "btrfs. O sistema atual (@) não é afetado.",
+                       "🧹 Abrir terminal",
+                       lambda: self.abrir_no_terminal(
+                           f"sudo {CLI} migrate finish && sudo {CLI} setup"))
 
     def ao_clicar_configurar(self, *_):
         self.executar_root(["setup"],

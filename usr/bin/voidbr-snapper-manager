@@ -274,7 +274,7 @@ cmd_delete() {
 
 # estado do sistema, uma chave=valor por linha (usado pela GUI)
 cmd_status() {
-	local fsroot layout cfg=no wheel=no gb=missing hooks=no used size
+	local fsroot layout cfg=no wheel=no gb=missing hooks=no migrate=no used size
 
 	if is_btrfs; then
 		fsroot=$(root_fsroot)
@@ -300,6 +300,8 @@ cmd_status() {
 
 	[[ -f /etc/xbps.d/hooks.d/00-$app-pre.hook && -f /etc/xbps.d/hooks.d/99-$app-post.hook ]] && hooks=yes
 
+	[[ -f /$migrate_mark ]] && migrate=pending
+
 	read -r used size < <(df -h --output=used,size / | tail -n1)
 
 	cat <<-EOF
@@ -310,6 +312,7 @@ cmd_status() {
 		wheel=$wheel
 		grub_btrfs=$gb
 		hooks=$hooks
+		migrate=$migrate
 		disk_used=$used
 		disk_size=$size
 	EOF
