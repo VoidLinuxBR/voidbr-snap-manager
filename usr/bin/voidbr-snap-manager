@@ -247,7 +247,6 @@ cmd_diff() {
 #-------------------------------------------------------------------------
 
 cmd_setup() {
-	local sv
 	check_root setup
 	command -v snapper >/dev/null || die "snapper não instalado"
 	is_btrfs || die "o / não é btrfs"
@@ -287,16 +286,15 @@ cmd_setup() {
 	ok "grupo wheel liberado para consultar os snapshots"
 
 	# 3. serviço do grub-btrfs (atualiza o menu a cada snapshot)
-	for sv in grub-btrfs grub-btrfsd; do
-		if [[ -d /etc/sv/$sv ]]; then
-			if [[ -e /var/service/$sv ]]; then
-				ok "serviço $sv já ativo"
-			else
-				ln -s "/etc/sv/$sv" /var/service/ && ok "serviço $sv ativado"
-			fi
-			break
+	if [[ -d /etc/sv/grub-btrfs ]]; then
+		if [[ -e /var/service/grub-btrfs ]]; then
+			ok "serviço grub-btrfs já ativo"
+		else
+			ln -s /etc/sv/grub-btrfs /var/service/ && ok "serviço grub-btrfs ativado"
 		fi
-	done
+	else
+		warn "serviço grub-btrfs não encontrado em /etc/sv (pacote grub-btrfs instalado?)"
+	fi
 
 	# 4. menu do GRUB
 	if command -v grub-mkconfig >/dev/null && [[ -f /boot/grub/grub.cfg ]]; then
