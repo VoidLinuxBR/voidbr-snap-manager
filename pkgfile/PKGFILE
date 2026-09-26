@@ -1,7 +1,7 @@
 # Maintainer: Vilmar Catafesta <vcatafesta@gmail.com>
 
-pkgname=voidbr-pkgname
-pkgdesc="Package template for VoidLinuxBR"
+pkgname=voidbr-snap-manager
+pkgdesc="Snapshots btrfs+snapper automáticos no xbps (hooks pre/post) e restauração trocando o @"
 pkgver=$(date +%Y%m%d)
 pkgrel=$(date +%H%M)
 provides=()               # "eu SOU o $pkgname pkg1, pra quem depender deles"
@@ -14,15 +14,15 @@ url="https://github.com/voidlinuxbr/${pkgname}"
 source=("git+${url}.git")
 md5sums=('SKIP')
 makedepends=()
-depends=()
+depends=(
+	'bash'
+	'snapper'
+	'btrfs-progs'
+	'util-linux'
+	'coreutils'
+	'voidbr-xbps'
+)
 backup=()
-
-# Automatically detect and use the correct install file
-if [ -e "${pkgname}.install" ]; then
-	install=${pkgname}.install
-elif [ -e "pkgbuild.install" ]; then
-	install=pkgfile.install
-fi
 
 package() {
 	# Verify default folder
@@ -61,6 +61,12 @@ pre_install() {
 
 post_install() {
 	log "Finalizando instalação"
+	echo "==> voidbr-snap-manager instalado."
+	echo "    O xbps agora cria um snapshot pre/post a cada transação,"
+	echo "    se o / for btrfs e existir a config 'root' do snapper."
+	echo "    Para criar a config: snapper -c root create-config /"
+	echo "    No Hyprland, adicione ao hyprland.conf:"
+	echo "      exec-once = voidbr-snap-manager check --notify"
 }
 
 pre_upgrade() {

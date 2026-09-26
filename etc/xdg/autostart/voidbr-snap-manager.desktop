@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=VoidBR Snap Manager
+Comment=Avisa quando o sistema foi iniciado a partir de um snapshot
+Exec=/usr/bin/voidbr-snap-manager check --notify
+Icon=dialog-warning
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

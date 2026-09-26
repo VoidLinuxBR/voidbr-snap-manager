@@ -1,0 +1,387 @@
+#!/usr/bin/env bash
+#
+# voidbr-snap-manager - snapshots btrfs + snapper integrados ao xbps (VoidBR)
+#
+# Layout suportado (flat, estilo Arch Wiki):
+#   @ (raiz)  @home  @snapshots   com o / montado por subvol=@
+#
+# Nesse layout o "snapper rollback" não tem efeito, porque o fstab e o
+# bootloader montam o / pelo nome @. O restore deste script troca o @
+# pelo snapshot escolhido e transforma o @ antigo num snapshot comum do
+# snapper (como faz o openSUSE), que depois é apagado pelas regras de
+# limpeza do próprio snapper (NUMBER_LIMIT).
+#
+# Subcomandos:
+#   pre                chamado pelo hook PreTransaction do voidbr-xbps
+#   post               chamado pelo hook PostTransaction do voidbr-xbps
+#   list               lista os snapshots
+#   diff [N]           mostra o que mudou entre o pre N e o post dele
+#   restore [N]        troca o @ pelo snapshot N (sem N: o snapshot atual)
+#   check [--notify]   avisa se o sistema foi bootado num snapshot
+#
+
+set -uo pipefail
+
+readonly app="voidbr-snap-manager"
+readonly conf_file="/etc/$app.conf"
+readonly state_dir="/run/$app"
+readonly state_pre="$state_dir/pre"
+
+# padrões (podem ser alterados em /etc/voidbr-snap-manager.conf)
+snapper_config="root"
+root_subvol="@"
+snap_subvol="@snapshots"
+abort_on_fail="no"
+important_pkgs="linux* glibc xbps voidbr-xbps grub* limine*"
+desc_max=120
+
+# shellcheck source=/dev/null
+[[ -r $conf_file ]] && . "$conf_file"
+
+red='\e[1;31m'
+green='\e[1;32m'
+yellow='\e[1;33m'
+blue='\e[1;34m'
+reset='\e[0m'
+
+msg()  { printf '%b==>%b %s\n' "$blue" "$reset" "$*"; }
+ok()   { printf '%b==>%b %s\n' "$green" "$reset" "$*"; }
+warn() { printf '%b==> AVISO:%b %s\n' "$yellow" "$reset" "$*" >&2; }
+die()  { printf '%b==> ERRO:%b %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+
+confirm() {
+	local resp
+	read -rp "$1 [s/N] " resp
+	[[ ${resp,,} == s* ]]
+}
+
+snap() { snapper --no-dbus -c "$snapper_config" "$@"; }
+
+#-------------------------------------------------------------------------
+# detecção do ambiente
+#-------------------------------------------------------------------------
+
+is_btrfs()       { [[ $(findmnt -no FSTYPE / 2>/dev/null) == btrfs ]]; }
+root_dev()       { findmnt -no SOURCE / | sed 's/\[.*//'; }
+root_fsroot()    { findmnt -no FSROOT /; }
+has_config()     { [[ -f /etc/snapper/configs/$snapper_config ]]; }
+in_snapshot()    { [[ $(root_fsroot) == "/$snap_subvol/"*/snapshot ]]; }
+
+# número do snapshot em que o sistema foi bootado (vazio se não estiver num)
+current_snap_num() {
+	local fsroot
+	fsroot=$(root_fsroot)
+	[[ $fsroot =~ ^/${snap_subvol}/([0-9]+)/snapshot$ ]] && echo "${BASH_REMATCH[1]}"
+}
+
+check_root() {
+	((EUID == 0)) || die "rode como root: sudo $app $*"
+}
+
+#-------------------------------------------------------------------------
+# topo do btrfs (subvolid=5), onde ficam @, @home e @snapshots
+#-------------------------------------------------------------------------
+
+top=""
+
+umount_top() {
+	if [[ -n $top ]] && mountpoint -q "$top"; then
+		umount "$top" && rmdir "$top"
+	fi
+	top=""
+}
+trap umount_top EXIT
+
+mount_top() {
+	top=$(mktemp -d "/tmp/$app.XXXXXX") || die "falha ao criar ponto de montagem"
+	mount -o subvolid=5 "$(root_dev)" "$top" || die "falha ao montar o topo do btrfs"
+	[[ -d $top/$root_subvol && -d $top/$snap_subvol ]] ||
+		die "não encontrei $root_subvol e $snap_subvol no topo do btrfs"
+}
+
+snap_desc() {
+	sed -n 's:.*<description>\(.*\)</description>.*:\1:p' \
+		"$top/$snap_subvol/$1/info.xml" 2>/dev/null
+}
+
+#-------------------------------------------------------------------------
+# pre / post (hooks do voidbr-xbps)
+#
+# Um hook PreTransaction que sai com erro ABORTA a transação no
+# voidbr-xbps. Por isso qualquer situação em que não dê para tirar o
+# snapshot termina com 0, exceto se abort_on_fail=yes.
+#-------------------------------------------------------------------------
+
+hook_skip() {
+	warn "snapshot não criado: $*"
+	exit 0
+}
+
+hook_fail() {
+	warn "falha ao criar snapshot: $*"
+	[[ $abort_on_fail == yes ]] && { warn "abortando a transação (abort_on_fail=yes)"; exit 1; }
+	exit 0
+}
+
+# lê os pacotes enviados pelo NeedsTargets (stdin, um por linha)
+read_targets() {
+	targets=()
+	[[ -t 0 ]] && return
+	local pkg
+	while IFS= read -r pkg; do
+		[[ -n $pkg ]] && targets+=("$pkg")
+	done
+}
+
+build_desc() {
+	local desc="xbps: ${targets[*]:-transação}"
+	((${#desc} > desc_max)) && desc="${desc:0:desc_max-3}..."
+	printf '%s' "$desc"
+}
+
+is_important() {
+	local pkg pat
+	for pkg in "${targets[@]}"; do
+		for pat in $important_pkgs; do
+			# shellcheck disable=SC2053
+			[[ $pkg == $pat ]] && return 0
+		done
+	done
+	return 1
+}
+
+hook_checks() {
+	[[ -n ${VOIDBR_SNAP_SKIP:-} ]] && hook_skip "VOIDBR_SNAP_SKIP definido"
+	((EUID == 0))                  || hook_skip "não está rodando como root"
+	command -v snapper >/dev/null  || hook_skip "snapper não instalado"
+	is_btrfs                       || hook_skip "o / não é btrfs"
+	has_config                     || hook_skip "config '$snapper_config' do snapper não existe"
+	in_snapshot                    && hook_skip "sistema bootado num snapshot"
+}
+
+cmd_pre() {
+	local num userdata=()
+	read_targets
+	hook_checks
+	is_important && userdata=(-u "important=yes")
+
+	num=$(snap create -t pre -p -c number "${userdata[@]}" -d "$(build_desc)") ||
+		hook_fail "snapper create -t pre"
+
+	mkdir -p "$state_dir" && printf '%s\n' "$num" >"$state_pre"
+	ok "snapshot pre $num criado"
+}
+
+cmd_post() {
+	local pre num userdata=()
+	read_targets
+	hook_checks
+
+	[[ -r $state_pre ]] || hook_skip "não há snapshot pre desta transação"
+	pre=$(<"$state_pre")
+	rm -f "$state_pre"
+	[[ $pre =~ ^[0-9]+$ ]] || hook_skip "número do pre inválido"
+
+	is_important && userdata=(-u "important=yes")
+
+	num=$(snap create -t post --pre-number "$pre" -p -c number "${userdata[@]}" -d "$(build_desc)") ||
+		hook_fail "snapper create -t post"
+
+	ok "snapshot post $num criado (par do $pre)"
+}
+
+#-------------------------------------------------------------------------
+# list / diff
+#-------------------------------------------------------------------------
+
+cmd_list() {
+	snapper -c "$snapper_config" list
+}
+
+# número, tipo e pre-number de cada snapshot, em CSV
+snap_csv() {
+	snapper -c "$snapper_config" --csvout --no-headers list --columns number,type,pre-number
+}
+
+cmd_diff() {
+	local pre=${1:-} post
+	[[ -n $pre ]] || pre=$(snap_csv | awk -F, '$2 == "pre" { n = $1 } END { print n }')
+	[[ $pre =~ ^[0-9]+$ ]] || die "informe o número do snapshot pre: $app diff N"
+
+	post=$(snap_csv | awk -F, -v p="$pre" '$2 == "post" && $3 == p { print $1 }')
+	[[ -n $post ]] || die "o snapshot $pre não tem um post correspondente"
+
+	msg "mudanças entre $pre e $post"
+	snapper -c "$snapper_config" status "$pre..$post"
+}
+
+#-------------------------------------------------------------------------
+# restore
+#-------------------------------------------------------------------------
+
+# próximo número livre em @snapshots
+next_snap_num() {
+	local d n max=0
+	for d in "$top/$snap_subvol"/*/; do
+		n=${d%/}
+		n=${n##*/}
+		[[ $n =~ ^[0-9]+$ ]] && ((n > max)) && max=$n
+	done
+	echo $((max + 1))
+}
+
+# grava o info.xml no formato do snapper (data em UTC)
+write_info_xml() {
+	local file=$1 num=$2 desc=$3
+	cat >"$file" <<-EOF
+		<?xml version="1.0"?>
+		<snapshot>
+		  <type>single</type>
+		  <num>$num</num>
+		  <date>$(date -u '+%Y-%m-%d %H:%M:%S')</date>
+		  <description>$desc</description>
+		  <cleanup>number</cleanup>
+		</snapshot>
+	EOF
+}
+
+cmd_restore() {
+	local n=${1:-} cur backup backup_dir src
+	check_root "restore $n"
+	is_btrfs || die "o / não é btrfs"
+
+	cur=$(current_snap_num)
+	[[ -z $n ]] && n=$cur
+	[[ $n =~ ^[0-9]+$ ]] ||
+		die "informe o número do snapshot (ou boote num snapshot pelo menu de boot): $app restore N"
+
+	if [[ -z $cur ]]; then
+		warn "você está no sistema normal ($(root_fsroot))."
+		warn "o recomendado é bootar no snapshot $n pelo menu de boot e rodar daí."
+		confirm "continuar mesmo assim?" || exit 1
+	elif [[ $cur != "$n" ]]; then
+		warn "você está no snapshot $cur, mas pediu para restaurar o $n."
+		confirm "continuar mesmo assim?" || exit 1
+	fi
+
+	mount_top
+
+	src="$top/$snap_subvol/$n/snapshot"
+	[[ -d $src ]] || die "snapshot $n não existe"
+	btrfs subvolume show "$src" >/dev/null 2>&1 || die "$src não é um subvolume"
+
+	backup=$(next_snap_num)
+	backup_dir="$top/$snap_subvol/$backup"
+
+	echo
+	msg "snapshot escolhido: $n ($(snap_desc "$n"))"
+	msg "o sistema atual será guardado como snapshot $backup"
+	msg "ele será apagado depois pela limpeza automática do snapper"
+	echo
+	confirm "restaurar o sistema para o snapshot $n?" || exit 1
+
+	# 1. o @ atual vira o snapshot $backup
+	mkdir "$backup_dir" || die "falha ao criar $backup_dir"
+	if ! mv "$top/$root_subvol" "$backup_dir/snapshot"; then
+		rmdir "$backup_dir"
+		die "falha ao mover o $root_subvol, nada foi alterado"
+	fi
+
+	# 2. novo @ a partir do snapshot escolhido
+	if ! btrfs subvolume snapshot "$src" "$top/$root_subvol"; then
+		mv "$backup_dir/snapshot" "$top/$root_subvol"
+		rmdir "$backup_dir"
+		die "falha ao criar o novo $root_subvol, nada foi alterado"
+	fi
+
+	# 3. registra o backup no snapper
+	write_info_xml "$backup_dir/info.xml" "$backup" "backup antes do restore do $n"
+	# somente leitura, como os outros snapshots. Não dá para fazer isso
+	# rodando do sistema normal: o @ antigo ainda é o / em uso.
+	if [[ -n $cur ]]; then
+		btrfs property set -ts "$backup_dir/snapshot" ro true ||
+			warn "não consegui marcar o snapshot $backup como somente leitura"
+	fi
+
+	# 4. desfaz um "snapper rollback" que tenha sido rodado antes
+	btrfs subvolume set-default 5 "$top"
+
+	umount_top
+
+	echo
+	ok "sistema restaurado para o snapshot $n"
+	ok "o sistema anterior está guardado como snapshot $backup"
+	msg "no menu de boot, escolha a entrada NORMAL (não a de snapshots)"
+	echo
+	if confirm "reiniciar agora?"; then
+		reboot
+	fi
+}
+
+#-------------------------------------------------------------------------
+# check (aviso ao bootar num snapshot)
+#-------------------------------------------------------------------------
+
+cmd_check() {
+	local mode=${1:-} n marker
+	is_btrfs || exit 0
+	n=$(current_snap_num)
+	[[ -n $n ]] || exit 0
+
+	# avisa uma vez por sessão
+	marker="${XDG_RUNTIME_DIR:-/tmp}/$app-check${mode:+-${mode#--}}"
+	[[ -e $marker ]] && exit 0
+	: >"$marker" 2>/dev/null
+
+	if [[ $mode == --notify ]]; then
+		command -v notify-send >/dev/null || exit 0
+		notify-send -u critical -a "$app" -i dialog-warning \
+			"Sistema iniciado num snapshot ($n)" \
+			"Para voltar o sistema para este snapshot, abra o terminal e rode:
+sudo $app restore"
+		exit 0
+	fi
+
+	echo
+	warn "este sistema foi iniciado a partir do snapshot $n."
+	msg "para torná-lo o sistema principal: sudo $app restore"
+	if [[ -t 0 ]] && confirm "restaurar agora?"; then
+		sudo "$app" restore "$n"
+	fi
+}
+
+#-------------------------------------------------------------------------
+
+usage() {
+	cat <<EOF
+Uso: $app <comando>
+
+  list               lista os snapshots
+  diff [N]           o que mudou na transação do snapshot pre N (padrão: a última)
+  restore [N]        restaura o sistema para o snapshot N
+                     (sem N: o snapshot em que o sistema foi bootado)
+  check [--notify]   avisa se o sistema foi bootado num snapshot
+
+Chamados pelos hooks do voidbr-xbps:
+  pre                snapshot antes da transação
+  post               snapshot depois da transação
+
+Se uma atualização quebrar o sistema:
+  1. no menu de boot, entre nos snapshots e escolha o "pre" da atualização
+  2. sudo $app restore
+  3. reinicie e entre no sistema normal
+
+Para pular o snapshot numa transação:
+  sudo VOIDBR_SNAP_SKIP=1 xbps-install ...
+EOF
+}
+
+case ${1:-} in
+	pre)     cmd_pre ;;
+	post)    cmd_post ;;
+	list)    cmd_list ;;
+	diff)    cmd_diff "${2:-}" ;;
+	restore) cmd_restore "${2:-}" ;;
+	check)   cmd_check "${2:-}" ;;
+	*)       usage ;;
+esac

@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type      = Package
+Target    = *
+
+[Action]
+Description = Criando snapshot (pre) do sistema
+When        = PreTransaction
+Exec        = /usr/bin/voidbr-snap-manager pre
+NeedsTargets
