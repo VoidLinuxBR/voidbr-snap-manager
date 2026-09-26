@@ -4,9 +4,9 @@ pkgname=voidbr-snap-manager
 pkgdesc="Snapshots btrfs+snapper automáticos no xbps (hooks pre/post) e restauração trocando o @"
 pkgver=$(date +%Y%m%d)
 pkgrel=$(date +%H%M)
-provides=()               # "eu SOU o $pkgname pkg1, pra quem depender deles"
-replaces=()               # "remove o pkg1 pkg2 antigo automaticamente quando eu instalar"
-conflicts=()              # "nunca me deixe coexistir com o pkg1 pkg2 original"
+provides=()  # "eu SOU o $pkgname pkg1, pra quem depender deles"
+replaces=()  # "remove o pkg1 pkg2 antigo automaticamente quando eu instalar"
+conflicts=() # "nunca me deixe coexistir com o pkg1 pkg2 original"
 arch=('any')
 license=('MIT')
 #url="ssh://git@github.com/voidlinuxbr/${pkgname}"
@@ -15,23 +15,27 @@ source=("git+${url}.git")
 md5sums=('SKIP')
 makedepends=()
 depends=(
+	'voidbr-xbps'
 	'bash'
 	'snapper'
 	'btrfs-progs'
+	'grub-btrfs'
 	'util-linux'
 	'coreutils'
-	'voidbr-xbps'
 )
-backup=()
+
+backup=(
+	'/etc/voidbr-snap-manager.conf'
+)
 
 package() {
 	# Verify default folder
-  if [ -d "${srcdir}/${pkgname}/${pkgname}" ]; then
+	if [ -d "${srcdir}/${pkgname}/${pkgname}" ]; then
 		InternalDir="${srcdir}/${pkgname}/${pkgname}"
-  elif [ -d "${srcdir}/${pkgname}" ]; then
+	elif [ -d "${srcdir}/${pkgname}" ]; then
 		InternalDir="${srcdir}/${pkgname}"
 	else
-    #local
+		#local
 		InternalDir="${WORKDIR}"
 	fi
 
@@ -64,7 +68,7 @@ post_install() {
 	echo "==> voidbr-snap-manager instalado."
 	echo "    O xbps agora cria um snapshot pre/post a cada transação,"
 	echo "    se o / for btrfs e existir a config 'root' do snapper."
-	echo "    Para criar a config: snapper -c root create-config /"
+	echo "    Para configurar: sudo voidbr-snap-manager setup"
 	echo "    No Hyprland, adicione ao hyprland.conf:"
 	echo "      exec-once = voidbr-snap-manager check --notify"
 }

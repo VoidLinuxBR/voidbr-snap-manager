@@ -48,13 +48,20 @@ Sem `voidbr-xbps` os hooks não rodam, mas `list`, `diff` e `restore` continuam 
 sudo xbps-install -S voidbr-snap-manager
 ```
 
-Se ainda não houver config do snapper para o `/`:
+Depois, configure uma vez:
 
 ```sh
-sudo snapper -c root create-config /
+sudo voidbr-snap-manager setup
 ```
 
-> Se o `@snapshots` já estiver montado em `/.snapshots` (layout do Arch Wiki), siga o procedimento do seu guia de instalação para criar a config sem perder o subvolume.
+O `setup`:
+
+- confere se o layout é o suportado (`/` em `@`, `@snapshots` montado em `/.snapshots` pelo fstab);
+- cria a config `root` do snapper sem perder o `@snapshots` (o `create-config` cria um `.snapshots` dentro do `@`, que é apagado, e o `@snapshots` volta a ser montado no lugar);
+- libera o grupo `wheel` para consultar os snapshots (`ALLOW_GROUPS=wheel`, `SYNC_ACL=yes`), para `list` e `diff` rodarem sem sudo;
+- ativa o serviço do grub-btrfs e atualiza o menu do GRUB.
+
+Pode ser rodado de novo sem problema: se a config já existir, ele só ajusta o resto.
 
 ### Hyprland
 
@@ -107,7 +114,10 @@ voidbr-snap-manager list               lista os snapshots
 voidbr-snap-manager diff [N]           o que mudou na transação do pre N (padrão: a última)
 sudo voidbr-snap-manager restore [N]   restaura o sistema para o snapshot N
 voidbr-snap-manager check [--notify]   avisa se o sistema foi iniciado num snapshot
+sudo voidbr-snap-manager setup         cria a config do snapper e libera o grupo wheel
 ```
+
+`list` e `diff` rodam sem sudo para quem está no grupo `wheel`, depois do `setup`. Sem isso, use `sudo`.
 
 `pre` e `post` são chamados pelos hooks e não precisam ser usados à mão.
 

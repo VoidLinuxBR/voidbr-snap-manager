@@ -18,6 +18,7 @@
 #   diff [N]           mostra o que mudou entre o pre N e o post dele
 #   restore [N]        troca o @ pelo snapshot N (sem N: o snapshot atual)
 #   check [--notify]   avisa se o sistema foi bootado num snapshot
+#   setup              cria a config do snapper no layout certo e libera o wheel
 #
 
 set -uo pipefail
@@ -194,25 +195,121 @@ cmd_post() {
 # list / diff
 #-------------------------------------------------------------------------
 
+# roda o snapper para consulta: como root sem dbus; como usuário via
+# snapperd, que exige ALLOW_USERS/ALLOW_GROUPS na config
+snap_query() {
+	local out rc
+	if ((EUID == 0)); then
+		out=$(snap "$@" 2>&1)
+	else
+		out=$(snapper -c "$snapper_config" "$@" 2>&1)
+	fi
+	rc=$?
+	if ((rc != 0)); then
+		printf '%s\n' "$out" >&2
+		((EUID == 0)) ||
+			warn "sem permissão? rode com sudo, ou libere o grupo wheel com: sudo $app setup"
+		exit "$rc"
+	fi
+	printf '%s\n' "$out"
+}
+
 cmd_list() {
-	snapper -c "$snapper_config" list
+	snap_query list
 }
 
 # número, tipo e pre-number de cada snapshot, em CSV
 snap_csv() {
-	snapper -c "$snapper_config" --csvout --no-headers list --columns number,type,pre-number
+	snap_query --csvout --no-headers list --columns number,type,pre-number
 }
 
 cmd_diff() {
-	local pre=${1:-} post
-	[[ -n $pre ]] || pre=$(snap_csv | awk -F, '$2 == "pre" { n = $1 } END { print n }')
-	[[ $pre =~ ^[0-9]+$ ]] || die "informe o número do snapshot pre: $app diff N"
+	local pre=${1:-} post csv
+	csv=$(snap_csv) || exit 1
 
-	post=$(snap_csv | awk -F, -v p="$pre" '$2 == "post" && $3 == p { print $1 }')
-	[[ -n $post ]] || die "o snapshot $pre não tem um post correspondente"
+	[[ -n $pre ]] || pre=$(awk -F, '$2 == "pre" { n = $1 } END { print n }' <<<"$csv")
+	[[ -n $pre ]] || die "nenhum snapshot pre encontrado"
+	[[ $pre =~ ^[0-9]+$ ]] || die "número inválido: $pre"
+
+	post=$(awk -F, -v p="$pre" '$2 == "post" && $3 == p { print $1 }' <<<"$csv")
+	[[ -n $post ]] || die "o snapshot $pre não é um pre com post correspondente"
 
 	msg "mudanças entre $pre e $post"
-	snapper -c "$snapper_config" status "$pre..$post"
+	snap_query status "$pre..$post"
+}
+
+#-------------------------------------------------------------------------
+# setup
+#
+# O "snapper create-config /" sempre cria um subvolume .snapshots dentro
+# do @. No layout flat, esse subvolume é apagado e o @snapshots volta a
+# ser montado em /.snapshots, pelo fstab.
+#-------------------------------------------------------------------------
+
+cmd_setup() {
+	local sv
+	check_root setup
+	command -v snapper >/dev/null || die "snapper não instalado"
+	is_btrfs || die "o / não é btrfs"
+
+	[[ $(root_fsroot) == "/$root_subvol" ]] ||
+		die "o / não está no subvolume $root_subvol (atual: $(root_fsroot)). Layout não suportado."
+
+	mount_top
+	[[ -d $top/$snap_subvol ]] || die "o subvolume $snap_subvol não existe no topo do btrfs"
+	umount_top
+
+	grep -Eq "[[:space:]]/\.snapshots[[:space:]].*subvol=/?$snap_subvol([,[:space:]]|$)" /etc/fstab ||
+		die "o fstab não monta o $snap_subvol em /.snapshots"
+
+	# 1. config do snapper
+	if has_config; then
+		ok "config '$snapper_config' do snapper já existe"
+	else
+		msg "criando a config '$snapper_config' do snapper"
+		mountpoint -q /.snapshots && { umount /.snapshots || die "falha ao desmontar /.snapshots"; }
+		[[ -d /.snapshots ]] && { rmdir /.snapshots || die "/.snapshots não está vazio"; }
+
+		snapper --no-dbus -c "$snapper_config" create-config / ||
+			die "falha no snapper create-config"
+
+		btrfs subvolume delete /.snapshots >/dev/null ||
+			die "falha ao apagar o /.snapshots criado pelo snapper"
+		mkdir /.snapshots
+		mount /.snapshots || die "falha ao montar o $snap_subvol em /.snapshots"
+		chmod 750 /.snapshots
+		ok "config criada, com o $snap_subvol em /.snapshots"
+	fi
+
+	# 2. grupo wheel pode consultar (list/diff sem sudo)
+	snap set-config "ALLOW_GROUPS=wheel" "SYNC_ACL=yes" ||
+		warn "não consegui liberar o grupo wheel na config"
+	ok "grupo wheel liberado para consultar os snapshots"
+
+	# 3. serviço do grub-btrfs (atualiza o menu a cada snapshot)
+	for sv in grub-btrfs grub-btrfsd; do
+		if [[ -d /etc/sv/$sv ]]; then
+			if [[ -e /var/service/$sv ]]; then
+				ok "serviço $sv já ativo"
+			else
+				ln -s "/etc/sv/$sv" /var/service/ && ok "serviço $sv ativado"
+			fi
+			break
+		fi
+	done
+
+	# 4. menu do GRUB
+	if command -v grub-mkconfig >/dev/null && [[ -f /boot/grub/grub.cfg ]]; then
+		msg "atualizando o menu do GRUB"
+		if grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then
+			ok "menu do GRUB atualizado"
+		else
+			warn "falha no grub-mkconfig"
+		fi
+	fi
+
+	echo
+	snap list
 }
 
 #-------------------------------------------------------------------------
@@ -361,6 +458,7 @@ Uso: $app <comando>
   restore [N]        restaura o sistema para o snapshot N
                      (sem N: o snapshot em que o sistema foi bootado)
   check [--notify]   avisa se o sistema foi bootado num snapshot
+  setup              cria a config do snapper e libera o grupo wheel
 
 Chamados pelos hooks do voidbr-xbps:
   pre                snapshot antes da transação
@@ -383,5 +481,6 @@ case ${1:-} in
 	diff)    cmd_diff "${2:-}" ;;
 	restore) cmd_restore "${2:-}" ;;
 	check)   cmd_check "${2:-}" ;;
+	setup)   cmd_setup ;;
 	*)       usage ;;
 esac
