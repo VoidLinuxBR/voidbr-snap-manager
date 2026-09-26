@@ -8,5 +8,5 @@ Target    = *
 [Action]
 Description = Criando snapshot (post) do sistema
 When        = PostTransaction
-Exec        = /usr/bin/voidbr-snap-manager post
+Exec        = /usr/bin/voidbr-snapper-manager post
 NeedsTargets

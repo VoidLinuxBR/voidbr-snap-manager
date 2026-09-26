@@ -1,12 +1,12 @@
 # Maintainer: Vilmar Catafesta <vcatafesta@gmail.com>
 
-pkgname=voidbr-snap-manager
+pkgname=voidbr-snapper-manager
 pkgdesc="Snapshots btrfs+snapper automáticos no xbps (hooks pre/post) e restauração trocando o @"
 pkgver=$(date +%Y%m%d)
 pkgrel=$(date +%H%M)
-provides=()  # "eu SOU o $pkgname pkg1, pra quem depender deles"
-replaces=()  # "remove o pkg1 pkg2 antigo automaticamente quando eu instalar"
-conflicts=() # "nunca me deixe coexistir com o pkg1 pkg2 original"
+provides=(voidbr-snap-manager)  # "eu SOU o $pkgname pkg1, pra quem depender deles"
+replaces=(voidbr-snap-manager)  # "remove o pkg1 pkg2 antigo automaticamente quando eu instalar"
+conflicts=(voidbr-snap-manager) # "nunca me deixe coexistir com o pkg1 pkg2 original"
 arch=('any')
 license=('MIT')
 #url="ssh://git@github.com/voidlinuxbr/${pkgname}"
@@ -25,7 +25,7 @@ depends=(
 )
 
 backup=(
-	'/etc/voidbr-snap-manager.conf'
+	'/etc/voidbr-snapper-manager.conf'
 )
 
 package() {
@@ -65,12 +65,12 @@ pre_install() {
 
 post_install() {
 	log "Finalizando instalação"
-	echo "==> voidbr-snap-manager instalado."
+	echo "==> voidbr-snapper-manager instalado."
 	echo "    O xbps agora cria um snapshot pre/post a cada transação,"
 	echo "    se o / for btrfs e existir a config 'root' do snapper."
-	echo "    Para configurar: sudo voidbr-snap-manager setup"
+	echo "    Para configurar: sudo voidbr-snapper-manager setup"
 	echo "    No Hyprland, adicione ao hyprland.conf:"
-	echo "      exec-once = voidbr-snap-manager check --notify"
+	echo "      exec-once = voidbr-snapper-manager check --notify"
 }
 
 pre_upgrade() {

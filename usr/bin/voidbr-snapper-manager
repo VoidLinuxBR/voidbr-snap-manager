@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# voidbr-snap-manager - snapshots btrfs + snapper integrados ao xbps (VoidBR)
+# voidbr-snapper-manager - snapshots btrfs + snapper integrados ao xbps (VoidBR)
 #
 # Layout suportado (flat, estilo Arch Wiki):
 #   @ (raiz)  @home  @snapshots   com o / montado por subvol=@
@@ -24,12 +24,12 @@
 
 set -uo pipefail
 
-readonly app="voidbr-snap-manager"
+readonly app="voidbr-snapper-manager"
 readonly conf_file="/etc/$app.conf"
 readonly state_dir="/run/$app"
 readonly state_pre="$state_dir/pre"
 
-# padrões (podem ser alterados em /etc/voidbr-snap-manager.conf)
+# padrões (podem ser alterados em /etc/voidbr-snapper-manager.conf)
 snapper_config="root"
 root_subvol="@"
 home_subvol="@home"
@@ -154,7 +154,7 @@ is_important() {
 }
 
 hook_checks() {
-	[[ -n ${VOIDBR_SNAP_SKIP:-} ]] && hook_skip "VOIDBR_SNAP_SKIP definido"
+	[[ -n ${VOIDBR_SNAPPER_SKIP:-} ]] && hook_skip "VOIDBR_SNAPPER_SKIP definido"
 	((EUID == 0))                  || hook_skip "não está rodando como root"
 	command -v snapper >/dev/null  || hook_skip "snapper não instalado"
 	is_btrfs                       || hook_skip "o / não é btrfs"
@@ -725,7 +725,7 @@ Se uma atualização quebrar o sistema:
   3. reinicie e entre no sistema normal
 
 Para pular o snapshot numa transação:
-  sudo VOIDBR_SNAP_SKIP=1 xbps-install ...
+  sudo VOIDBR_SNAPPER_SKIP=1 xbps-install ...
 EOF
 }
 

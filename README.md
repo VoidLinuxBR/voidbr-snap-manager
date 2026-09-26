@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔵 voidbr-snap-manager
+# 🔵 voidbr-snapper-manager
 
 **Snapshots btrfs+snapper automáticos no xbps (hooks pre/post) e restauração trocando o @**
 
@@ -23,7 +23,7 @@ Snapshots automáticos do sistema a cada atualização do xbps e restauração s
 
 No layout btrfs mais comum (`@`, `@home`, `@snapshots`, estilo Arch Wiki), o `/` é montado pelo nome `@`, no fstab e no bootloader. O `snapper rollback` funciona marcando um snapshot como **subvolume padrão** do btrfs, mas com o `subvol=@` fixo esse padrão é ignorado e o sistema continua subindo o `@` antigo. Na prática, o rollback "funciona" e não muda nada.
 
-O openSUSE resolve isso com um layout e um GRUB próprios. As outras distros com o layout flat trocam o `@` pelo snapshot, com ferramentas como `snapper-rollback` (Arch) e Timeshift (Mint/Ubuntu). O `voidbr-snap-manager` faz essa troca no VoidBR e soma a ela os snapshots automáticos do xbps.
+O openSUSE resolve isso com um layout e um GRUB próprios. As outras distros com o layout flat trocam o `@` pelo snapshot, com ferramentas como `snapper-rollback` (Arch) e Timeshift (Mint/Ubuntu). O `voidbr-snapper-manager` faz essa troca no VoidBR e soma a ela os snapshots automáticos do xbps.
 
 ---
 
@@ -45,7 +45,7 @@ Sem `voidbr-xbps` os hooks não rodam, mas `list`, `diff` e `restore` continuam 
 ## Instalação
 
 ```sh
-sudo xbps-install -S voidbr-snap-manager
+sudo xbps-install -S voidbr-snapper-manager
 ```
 
 ### Sistema instalado sem subvolumes
@@ -53,7 +53,7 @@ sudo xbps-install -S voidbr-snap-manager
 Se o `/` estiver direto na raiz do btrfs (sem `@`), converta antes para o layout suportado:
 
 ```sh
-sudo voidbr-snap-manager migrate
+sudo voidbr-snapper-manager migrate
 ```
 
 O `migrate`:
@@ -68,7 +68,7 @@ Até aqui o sistema antigo continua inteiro na raiz do btrfs. Depois do reboot, 
 
 ```sh
 findmnt -no FSROOT /                      # /@
-sudo voidbr-snap-manager migrate finish   # apaga o sistema antigo da raiz
+sudo voidbr-snapper-manager migrate finish   # apaga o sistema antigo da raiz
 ```
 
 > Tire um backup antes. Por enquanto o `migrate` suporta só GRUB (UEFI, UEFI `--removable` e BIOS).
@@ -78,7 +78,7 @@ sudo voidbr-snap-manager migrate finish   # apaga o sistema antigo da raiz
 Depois, configure uma vez:
 
 ```sh
-sudo voidbr-snap-manager setup
+sudo voidbr-snapper-manager setup
 ```
 
 O `setup`:
@@ -95,7 +95,7 @@ Pode ser rodado de novo sem problema: se a config já existir, ele só ajusta o 
 O Hyprland não lê `/etc/xdg/autostart`. Para receber a notificação ao logar, adicione ao `hyprland.conf`:
 
 ```ini
-exec-once = voidbr-snap-manager check --notify
+exec-once = voidbr-snapper-manager check --notify
 ```
 
 ---
@@ -108,9 +108,9 @@ A cada transação do xbps:
 
 ```
 xbps-install -Su
-  ├─ 00-voidbr-snap-pre.hook   →  snapshot "pre"   (antes de tudo)
+  ├─ 00-voidbr-snapper-pre.hook   →  snapshot "pre"   (antes de tudo)
   ├─ ... instala / atualiza / remove ...
-  └─ 99-voidbr-snap-post.hook  →  snapshot "post"  (depois de todos os hooks)
+  └─ 99-voidbr-snapper-post.hook  →  snapshot "post"  (depois de todos os hooks)
 ```
 
 - A descrição do snapshot traz os pacotes da transação (`xbps: linux6.6 vim ...`).
@@ -137,13 +137,13 @@ O backup aparece no `snapper list` e no menu do grub-btrfs, então dá para volt
 ## Uso
 
 ```
-voidbr-snap-manager list               lista os snapshots
-voidbr-snap-manager diff [N]           o que mudou na transação do pre N (padrão: a última)
-sudo voidbr-snap-manager restore [N]   restaura o sistema para o snapshot N
-voidbr-snap-manager check [--notify]   avisa se o sistema foi iniciado num snapshot
-sudo voidbr-snap-manager setup         cria a config do snapper e libera o grupo wheel
-sudo voidbr-snap-manager migrate       converte o / da raiz do btrfs para @/@home/@snapshots
-sudo voidbr-snap-manager migrate finish   depois do reboot, apaga o sistema antigo
+voidbr-snapper-manager list               lista os snapshots
+voidbr-snapper-manager diff [N]           o que mudou na transação do pre N (padrão: a última)
+sudo voidbr-snapper-manager restore [N]   restaura o sistema para o snapshot N
+voidbr-snapper-manager check [--notify]   avisa se o sistema foi iniciado num snapshot
+sudo voidbr-snapper-manager setup         cria a config do snapper e libera o grupo wheel
+sudo voidbr-snapper-manager migrate       converte o / da raiz do btrfs para @/@home/@snapshots
+sudo voidbr-snapper-manager migrate finish   depois do reboot, apaga o sistema antigo
 ```
 
 `list` e `diff` rodam sem sudo para quem está no grupo `wheel`, depois do `setup`. Sem isso, use `sudo`.
@@ -160,28 +160,28 @@ sudo voidbr-snap-manager migrate finish   depois do reboot, apaga o sistema anti
    ```
    Ou rode direto (sem número, ele usa o snapshot em que bootou):
    ```sh
-   sudo voidbr-snap-manager restore
+   sudo voidbr-snapper-manager restore
    ```
 3. Reinicie e escolha a entrada **normal** do sistema.
 
 ### Ver o que uma atualização mudou
 
 ```sh
-voidbr-snap-manager diff        # última transação
-voidbr-snap-manager diff 42     # transação do pre 42
+voidbr-snapper-manager diff        # última transação
+voidbr-snapper-manager diff 42     # transação do pre 42
 ```
 
 ### Pular o snapshot numa transação
 
 ```sh
-sudo VOIDBR_SNAP_SKIP=1 xbps-install -S pacote
+sudo VOIDBR_SNAPPER_SKIP=1 xbps-install -S pacote
 ```
 
 ---
 
 ## Configuração
 
-`/etc/voidbr-snap-manager.conf`
+`/etc/voidbr-snapper-manager.conf`
 
 | Variável | Padrão | Descrição |
 |---|---|---|
@@ -210,13 +210,13 @@ Os limites de quantos snapshots manter ficam no próprio snapper, em `/etc/snapp
 
 | Caminho | Descrição |
 |---|---|
-| `/usr/bin/voidbr-snap-manager` | script |
-| `/etc/voidbr-snap-manager.conf` | configuração |
-| `/etc/xbps.d/hooks.d/00-voidbr-snap-pre.hook` | hook do snapshot pre |
-| `/etc/xbps.d/hooks.d/99-voidbr-snap-post.hook` | hook do snapshot post |
-| `/etc/xdg/autostart/voidbr-snap-manager.desktop` | notificação ao logar |
-| `/etc/bash/bashrc.d/voidbr-snap-manager.sh` | aviso ao abrir o terminal |
-| `/run/voidbr-snap-manager/pre` | número do pre da transação em andamento |
+| `/usr/bin/voidbr-snapper-manager` | script |
+| `/etc/voidbr-snapper-manager.conf` | configuração |
+| `/etc/xbps.d/hooks.d/00-voidbr-snapper-pre.hook` | hook do snapshot pre |
+| `/etc/xbps.d/hooks.d/99-voidbr-snapper-post.hook` | hook do snapshot post |
+| `/etc/xdg/autostart/voidbr-snapper-manager.desktop` | notificação ao logar |
+| `/etc/bash/bashrc.d/voidbr-snapper-manager.sh` | aviso ao abrir o terminal |
+| `/run/voidbr-snapper-manager/pre` | número do pre da transação em andamento |
 
 ---
 
@@ -225,6 +225,6 @@ Os limites de quantos snapshots manter ficam no próprio snapper, em `/etc/snapp
 - **Limine:** o restore funciona igual, mas bootar num snapshot depende de o menu do Limine listar os snapshots. Por enquanto, use o GRUB (grub-btrfs) ou um live para entrar no snapshot.
 - **`/home`** não volta no tempo. Só o sistema (`@`) é restaurado.
 - Com o `/var/log` dentro do `@`, os logs também voltam junto com o snapshot.
-- Não use `snapper rollback` nesse layout, porque ele não tem efeito. Use `voidbr-snap-manager restore`.
+- Não use `snapper rollback` nesse layout, porque ele não tem efeito. Use `voidbr-snapper-manager restore`.
 
 ---

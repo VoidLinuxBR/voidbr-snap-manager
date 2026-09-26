@@ -8,5 +8,5 @@ Target    = *
 [Action]
 Description = Criando snapshot (pre) do sistema
 When        = PreTransaction
-Exec        = /usr/bin/voidbr-snap-manager pre
+Exec        = /usr/bin/voidbr-snapper-manager pre
 NeedsTargets
