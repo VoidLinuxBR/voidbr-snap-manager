@@ -171,6 +171,16 @@ voidbr-snapper-manager diff        # última transação
 voidbr-snapper-manager diff 42     # transação do pre 42
 ```
 
+### Interface gráfica
+
+```sh
+voidbr-snapper-manager-gui
+```
+
+Ou pelo menu, em **VoidBR Snapper Manager**. A janela mostra os snapshots (com os pares antes/depois e os importantes marcados), as alterações de cada atualização, o estado do sistema no rodapé e um aviso quando o sistema foi iniciado a partir de um snapshot, com o botão para restaurá-lo.
+
+As ações (criar, apagar, restaurar, configurar) pedem a senha pelo polkit. No Hyprland é preciso ter um agente polkit rodando (por exemplo, `hyprpolkitagent`).
+
 ### Pular o snapshot numa transação
 
 ```sh

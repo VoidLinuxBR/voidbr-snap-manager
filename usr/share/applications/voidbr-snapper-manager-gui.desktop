@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=VoidBR Snapper Manager
+GenericName=Snapshots do sistema
+Comment=Gerencie e restaure os snapshots btrfs do sistema
+Exec=voidbr-snapper-manager-gui
+Icon=document-revert
+Terminal=false
+Categories=System;X-VoidBR-Apps;
+Keywords=snapshot;snapper;btrfs;restore;backup;
+StartupNotify=true

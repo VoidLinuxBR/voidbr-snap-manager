@@ -52,8 +52,11 @@ ok()   { printf '%b==>%b %s\n' "$green" "$reset" "$*"; }
 warn() { printf '%b==> AVISO:%b %s\n' "$yellow" "$reset" "$*" >&2; }
 die()  { printf '%b==> ERRO:%b %s\n' "$red" "$reset" "$*" >&2; exit 1; }
 
+assume_yes=no
+
 confirm() {
 	local resp
+	[[ $assume_yes == yes ]] && return 0
 	read -rp "$1 [s/N] " resp
 	[[ ${resp,,} == s* ]]
 }
@@ -240,6 +243,78 @@ cmd_diff() {
 	snap_query status "$pre..$post"
 }
 
+# saída para a GUI: número,tipo,pre,data(ISO),limpeza,descrição,userdata
+cmd_list_csv() {
+	snap_query --csvout --iso list --columns number,type,pre-number,date,cleanup,description,userdata
+}
+
+cmd_create() {
+	local desc=${1:-manual} num
+	check_root create
+	{ is_btrfs && has_config; } || die "snapper não configurado. Rode: sudo $app setup"
+	in_snapshot && die "o sistema foi iniciado num snapshot; não dá para criar snapshots aqui"
+	num=$(snap create -t single -p -c number -d "$desc") || die "falha ao criar o snapshot"
+	ok "snapshot $num criado"
+	echo "$num"
+}
+
+cmd_delete() {
+	local n cur
+	check_root delete
+	(($# > 0)) || die "informe o(s) número(s): $app delete N [N...]"
+	cur=$(current_snap_num)
+	for n in "$@"; do
+		[[ $n =~ ^[0-9]+$ ]] || die "número inválido: $n"
+		((n == 0)) && die "o snapshot 0 é o sistema atual"
+		[[ $n == "$cur" ]] && die "o sistema está rodando no snapshot $n"
+	done
+	snap delete "$@" || die "falha ao apagar"
+	ok "apagado(s): $*"
+}
+
+# estado do sistema, uma chave=valor por linha (usado pela GUI)
+cmd_status() {
+	local fsroot layout cfg=no wheel=no gb=missing hooks=no used size
+
+	if is_btrfs; then
+		fsroot=$(root_fsroot)
+		case $fsroot in
+			/)                        layout=toplevel ;;
+			"/$root_subvol")          layout=flat ;;
+			"/$snap_subvol/"*/snapshot) layout=snapshot ;;
+			*)                        layout=other ;;
+		esac
+	else
+		fsroot=""
+		layout=nobtrfs
+	fi
+
+	if has_config; then
+		cfg=yes
+		grep -Eq '^ALLOW_GROUPS=".*\bwheel\b.*"' "/etc/snapper/configs/$snapper_config" && wheel=yes
+	fi
+
+	if [[ -d /etc/sv/grub-btrfs ]]; then
+		[[ -e /var/service/grub-btrfs ]] && gb=active || gb=inactive
+	fi
+
+	[[ -f /etc/xbps.d/hooks.d/00-$app-pre.hook && -f /etc/xbps.d/hooks.d/99-$app-post.hook ]] && hooks=yes
+
+	read -r used size < <(df -h --output=used,size / | tail -n1)
+
+	cat <<-EOF
+		layout=$layout
+		fsroot=$fsroot
+		booted_snapshot=$(current_snap_num)
+		config=$cfg
+		wheel=$wheel
+		grub_btrfs=$gb
+		hooks=$hooks
+		disk_used=$used
+		disk_size=$size
+	EOF
+}
+
 #-------------------------------------------------------------------------
 # setup
 #
@@ -413,6 +488,7 @@ cmd_restore() {
 	ok "o sistema anterior está guardado como snapshot $backup"
 	msg "no menu de boot, escolha a entrada NORMAL (não a de snapshots)"
 	echo
+	[[ $assume_yes == yes ]] && return 0
 	if confirm "reiniciar agora?"; then
 		reboot
 	fi
@@ -711,6 +787,9 @@ Uso: $app <comando>
   restore [N]        restaura o sistema para o snapshot N
                      (sem N: o snapshot em que o sistema foi bootado)
   check [--notify]   avisa se o sistema foi bootado num snapshot
+  create [DESCRIÇÃO]  cria um snapshot manual
+  delete N [N...]    apaga snapshots
+  status             estado do sistema (chave=valor)
   setup              cria a config do snapper e libera o grupo wheel
   migrate            converte o / da raiz do btrfs para o layout @/@home/@snapshots
   migrate finish     depois do reboot: apaga o sistema antigo da raiz do btrfs
@@ -724,18 +803,36 @@ Se uma atualização quebrar o sistema:
   2. sudo $app restore
   3. reinicie e entre no sistema normal
 
+Opções:
+  --yes              não pergunta nada (restore não reinicia sozinho)
+  --csv              com list: saída em CSV (usada pela GUI)
+
 Para pular o snapshot numa transação:
   sudo VOIDBR_SNAPPER_SKIP=1 xbps-install ...
 EOF
 }
 
+args=()
+list_csv=no
+for a in "$@"; do
+	case $a in
+		--yes) assume_yes=yes ;;
+		--csv) list_csv=yes ;;
+		*)     args+=("$a") ;;
+	esac
+done
+set -- "${args[@]}"
+
 case ${1:-} in
 	pre)     cmd_pre ;;
 	post)    cmd_post ;;
-	list)    cmd_list ;;
+	list)    if [[ $list_csv == yes ]]; then cmd_list_csv; else cmd_list; fi ;;
 	diff)    cmd_diff "${2:-}" ;;
 	restore) cmd_restore "${2:-}" ;;
 	check)   cmd_check "${2:-}" ;;
+	create)  shift; cmd_create "$*" ;;
+	delete)  shift; cmd_delete "$@" ;;
+	status)  cmd_status ;;
 	setup)   cmd_setup ;;
 	migrate) cmd_migrate "${2:-}" ;;
 	*)       usage ;;

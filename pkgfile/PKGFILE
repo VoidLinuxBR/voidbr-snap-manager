@@ -15,13 +15,16 @@ source=("git+${url}.git")
 md5sums=('SKIP')
 makedepends=()
 depends=(
-	'voidbr-xbps'
 	'bash'
 	'snapper'
 	'btrfs-progs'
 	'grub-btrfs'
 	'util-linux'
 	'coreutils'
+	'voidbr-xbps'
+	'polkit'
+	'python3-gobject'
+	'gtk4'
 )
 
 backup=(

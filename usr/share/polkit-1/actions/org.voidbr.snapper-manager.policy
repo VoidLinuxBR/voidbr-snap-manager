@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>VoidBR</vendor>
+  <vendor_url>https://voidbr.org</vendor_url>
+
+  <action id="org.voidbr.snapper-manager">
+    <description>Gerenciar os snapshots do sistema</description>
+    <message>É preciso autenticar para gerenciar os snapshots do sistema</message>
+    <icon_name>document-revert</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/voidbr-snapper-manager</annotate>
+  </action>
+</policyconfig>
