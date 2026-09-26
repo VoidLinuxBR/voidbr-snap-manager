@@ -19,6 +19,7 @@
 #   restore [N]        troca o @ pelo snapshot N (sem N: o snapshot atual)
 #   check [--notify]   avisa se o sistema foi bootado num snapshot
 #   setup              cria a config do snapper no layout certo e libera o wheel
+#   migrate [finish]   converte o / da raiz do btrfs para o layout @/@home/@snapshots
 #
 
 set -uo pipefail
@@ -31,6 +32,7 @@ readonly state_pre="$state_dir/pre"
 # padrões (podem ser alterados em /etc/voidbr-snap-manager.conf)
 snapper_config="root"
 root_subvol="@"
+home_subvol="@home"
 snap_subvol="@snapshots"
 abort_on_fail="no"
 important_pkgs="linux* glibc xbps voidbr-xbps grub* limine*"
@@ -251,6 +253,9 @@ cmd_setup() {
 	command -v snapper >/dev/null || die "snapper não instalado"
 	is_btrfs || die "o / não é btrfs"
 
+	if [[ $(root_fsroot) == / ]]; then
+		die "o / está direto na raiz do btrfs, sem subvolumes. Converta antes com: sudo $app migrate"
+	fi
 	[[ $(root_fsroot) == "/$root_subvol" ]] ||
 		die "o / não está no subvolume $root_subvol (atual: $(root_fsroot)). Layout não suportado."
 
@@ -446,6 +451,256 @@ sudo $app restore"
 }
 
 #-------------------------------------------------------------------------
+# migrate
+#
+# Converte um sistema com o / direto na raiz do btrfs (subvolid=5, sem
+# subvolumes) para o layout flat: @ (raiz), @home e @snapshots.
+#
+#   migrate          etapa 1: cria os subvolumes, ajusta o fstab e o GRUB
+#                    dentro do novo @. O sistema antigo continua intacto
+#                    na raiz até a etapa 2.
+#   migrate finish   etapa 2 (depois do reboot, já no @): apaga o conteúdo
+#                    antigo da raiz do btrfs.
+#
+# Suporta só GRUB (UEFI, UEFI --removable e BIOS).
+#-------------------------------------------------------------------------
+
+readonly migrate_mark="var/lib/$app/migrated"
+
+# ponto de montagem da ESP (vazio se não houver)
+esp_dir() {
+	local d
+	for d in /boot/efi /efi /boot; do
+		[[ $(findmnt -no FSTYPE "$d" 2>/dev/null) == vfat ]] && { echo "$d"; return; }
+	done
+}
+
+# disco físico por baixo do / (atravessa LUKS/LVM)
+root_disk() {
+	lsblk -nspo NAME,TYPE "$(root_dev)" | awk '$2 == "disk" { d = $1 } END { print d }'
+}
+
+# ids de boot UEFI que apontam para o grubx64.efi (ex: void, Void Linux)
+grub_efi_ids() {
+	efibootmgr -v 2>/dev/null |
+		grep -io '\\EFI\\[^\\]*\\grubx64\.efi' |
+		tr '\134' '/' | cut -d/ -f3 | sort -u
+}
+
+# o fallback EFI/BOOT/BOOTX64.EFI é um GRUB?
+grub_is_removable() {
+	local esp=$1 f
+	f=$(find "$esp" -maxdepth 3 -ipath "$esp/efi/boot/bootx64.efi" 2>/dev/null | head -n1)
+	[[ -n $f ]] && grep -aqi 'grub' "$f"
+}
+
+# reescreve o fstab: subvol=@ no / e linhas novas para /home e /.snapshots
+# $1 = fstab   $2 = criar linha do /home (yes/no)
+migrate_fstab() {
+	local fstab=$1 with_home=$2 spec opts
+	read -r spec opts < <(awk '!/^[[:space:]]*#/ && $2 == "/" && $3 == "btrfs" { print $1, $4; exit }' "$fstab")
+	[[ -n $spec && -n $opts ]] || return 1
+
+	# tira subvol/subvolid que por acaso existam
+	opts=$(tr ',' '\n' <<<"$opts" | grep -Ev '^subvol(id)?=' | paste -sd, -)
+
+	# troca só o campo de opções da linha do /, mantendo o alinhamento
+	sed -E "0,/^[^#[:space:]]+[[:space:]]+\/[[:space:]]+btrfs[[:space:]]/s|^([^#[:space:]]+[[:space:]]+/[[:space:]]+btrfs[[:space:]]+)[^[:space:]]+|\1$opts,subvol=$root_subvol|" \
+		"$fstab" >"$fstab.new" || return 1
+
+	{
+		[[ $with_home == yes ]] &&
+			printf '%s  /home        btrfs  %s,subvol=%s  0 0\n' "$spec" "$opts" "$home_subvol"
+		printf '%s  /.snapshots  btrfs  %s,subvol=%s  0 0\n' "$spec" "$opts" "$snap_subvol"
+	} >>"$fstab.new"
+
+	mv "$fstab.new" "$fstab"
+}
+
+migrate_checks() {
+	local subs sw
+
+	command -v snapper >/dev/null || die "snapper não instalado"
+	is_btrfs || die "o / não é btrfs"
+
+	[[ $(root_fsroot) == / ]] ||
+		die "o / já está num subvolume ($(root_fsroot)). Nada a migrar."
+
+	subs=$(btrfs subvolume list / 2>/dev/null)
+	[[ -z $subs ]] || die "existem subvolumes na raiz do btrfs; o migrate não os copiaria:
+$subs"
+
+	[[ -e /$root_subvol || -e /$home_subvol || -e /$snap_subvol ]] &&
+		die "já existe /$root_subvol, /$home_subvol ou /$snap_subvol na raiz"
+
+	while read -r sw; do
+		[[ -n $sw ]] || continue
+		[[ $(findmnt -no SOURCE -T "$sw") == "$(root_dev)" ]] &&
+			die "swapfile ativo no btrfs ($sw); o btrfs não tira snapshot assim. Desative com: swapoff $sw"
+	done < <(swapon --show=NAME,TYPE --noheadings 2>/dev/null | awk '$2 == "file" { print $1 }')
+
+	grep -Eq '^[^#]*[[:space:]]/\.snapshots[[:space:]]' /etc/fstab &&
+		die "o fstab já tem uma linha para /.snapshots"
+
+	command -v grub-install >/dev/null && command -v grub-mkconfig >/dev/null && [[ -f /boot/grub/grub.cfg ]] ||
+		die "GRUB não encontrado. Por enquanto o migrate só suporta GRUB."
+}
+
+cmd_migrate() {
+	local with_home=yes mode="" esp disk ids=() id new mnt m cfg
+	check_root migrate
+
+	[[ ${1:-} == finish ]] && { cmd_migrate_finish; return; }
+
+	migrate_checks
+
+	# /home em outra partição: fica como está
+	if mountpoint -q /home && [[ $(findmnt -no SOURCE /home) != "$(root_dev)"* ]]; then
+		with_home=no
+	elif grep -Eq '^[^#]*[[:space:]]/home[[:space:]]' /etc/fstab; then
+		die "o fstab tem uma linha para /home, mas o /home não está montado. Confira antes de migrar."
+	fi
+
+	# como o GRUB está instalado
+	esp=$(esp_dir)
+	if [[ -d /sys/firmware/efi ]]; then
+		[[ -n $esp ]] || die "sistema UEFI, mas a ESP não está montada"
+		command -v efibootmgr >/dev/null || die "efibootmgr não instalado"
+		while IFS= read -r id; do
+		[[ -n $(find "$esp" -maxdepth 3 -ipath "$esp/efi/$id/grubx64.efi" 2>/dev/null) ]] && ids+=("$id")
+	done < <(grub_efi_ids)
+		grub_is_removable "$esp" && mode="removable"
+		((${#ids[@]} > 0)) && mode="${mode:+$mode+}id"
+		[[ -n $mode ]] || die "não achei o GRUB na ESP ($esp)"
+	else
+		mode="bios"
+		disk=$(root_disk)
+		[[ -b $disk ]] || die "não achei o disco do /"
+	fi
+
+	echo
+	msg "sistema: $(root_dev), / direto na raiz do btrfs"
+	msg "vai criar: $root_subvol, $snap_subvol$([[ $with_home == yes ]] && echo ", $home_subvol")"
+	[[ $with_home == no ]] && msg "/home está em outra partição e fica como está"
+	case $mode in
+		bios) msg "GRUB BIOS em $disk" ;;
+		*)    msg "GRUB UEFI em $esp$( ((${#ids[@]})) && echo " (id: ${ids[*]})")$([[ $mode == *removable* ]] && echo " + fallback EFI/BOOT")" ;;
+	esac
+	echo
+	warn "tire um backup (ou snapshot da VM) antes de continuar."
+	warn "o que mudar no sistema depois deste ponto e antes do reboot não vai para o novo $root_subvol."
+	confirm "migrar para o layout $root_subvol/$snap_subvol?" || exit 1
+
+	# 1. subvolumes
+	msg "criando $root_subvol (snapshot da raiz)"
+	btrfs subvolume snapshot / "/$root_subvol" >/dev/null || die "falha ao criar /$root_subvol"
+	btrfs subvolume create "/$snap_subvol" >/dev/null || die "falha ao criar /$snap_subvol"
+
+	# 2. /home para o @home
+	if [[ $with_home == yes ]]; then
+		msg "movendo /home para $home_subvol"
+		btrfs subvolume create "/$home_subvol" >/dev/null || die "falha ao criar /$home_subvol"
+		cp -a --reflink=always "/$root_subvol/home/." "/$home_subvol/" ||
+			die "falha ao copiar o /home para /$home_subvol"
+		find "/$root_subvol/home" -mindepth 1 -delete
+	fi
+
+	# 3. fstab do novo @
+	new="/$root_subvol"
+	mkdir -p "$new/.snapshots"
+	cp -a "$new/etc/fstab" "$new/etc/fstab.pre-migrate"
+	migrate_fstab "$new/etc/fstab" "$with_home" || die "falha ao ajustar o $new/etc/fstab"
+	ok "fstab ajustado (original em /etc/fstab.pre-migrate)"
+
+	# 4. GRUB dentro do novo @
+	mnt=$(mktemp -d "/tmp/$app-migrate.XXXXXX")
+	mount -o "subvol=$root_subvol" "$(root_dev)" "$mnt" || die "falha ao montar o $root_subvol"
+	for m in /boot /boot/efi /efi; do
+		mountpoint -q "$m" && mount --bind "$m" "$mnt$m"
+	done
+	for m in dev proc sys run; do
+		mount --rbind "/$m" "$mnt/$m" && mount --make-rslave "$mnt/$m"
+	done
+
+	msg "instalando o GRUB no novo $root_subvol"
+	if [[ $mode == bios ]]; then
+		chroot "$mnt" grub-install --target=i386-pc "$disk" || { umount -R "$mnt"; die "falha no grub-install"; }
+	else
+		for id in "${ids[@]}"; do
+			chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
+				--bootloader-id="$id" || { umount -R "$mnt"; die "falha no grub-install ($id)"; }
+		done
+		if [[ $mode == *removable* ]]; then
+			chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
+				--removable || { umount -R "$mnt"; die "falha no grub-install --removable"; }
+		fi
+	fi
+
+	chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 ||
+		{ umount -R "$mnt"; die "falha no grub-mkconfig"; }
+
+	cfg="$mnt/boot/grub/grub.cfg"
+	if ! grep -q "rootflags=subvol=$root_subvol" "$cfg"; then
+		umount -R "$mnt"
+		die "o grub.cfg novo não tem rootflags=subvol=$root_subvol. NÃO reinicie: restaure o backup."
+	fi
+	ok "GRUB instalado, com rootflags=subvol=$root_subvol"
+
+	mkdir -p "$mnt/${migrate_mark%/*}"
+	date '+%F %T' >"$mnt/$migrate_mark"
+	umount -R "$mnt" && rmdir "$mnt"
+
+	echo
+	ok "etapa 1 concluída"
+	msg "depois do reboot, confira com: findmnt -no FSROOT /   (tem que ser /$root_subvol)"
+	msg "e termine com: sudo $app migrate finish"
+	echo
+	if confirm "reiniciar agora?"; then
+		reboot
+	fi
+}
+
+cmd_migrate_finish() {
+	local e n=0 entries=()
+
+	[[ $(root_fsroot) == "/$root_subvol" ]] ||
+		die "o sistema não subiu no $root_subvol (atual: $(root_fsroot)). Rode o finish só depois do reboot."
+	[[ -f /$migrate_mark ]] || die "não há migração pendente (/$migrate_mark não existe)"
+
+	mount_top
+
+	for e in "$top"/* "$top"/.[!.]*; do
+		[[ -e $e ]] || continue
+		case ${e##*/} in
+			"$root_subvol" | "$home_subvol" | "$snap_subvol") continue ;;
+		esac
+		entries+=("$e")
+	done
+
+	if ((${#entries[@]} == 0)); then
+		ok "a raiz do btrfs já está limpa"
+	else
+		msg "conteúdo antigo na raiz do btrfs (fora de $root_subvol/$home_subvol/$snap_subvol):"
+		printf '    %s\n' "${entries[@]##*/}"
+		echo
+		warn "isso apaga o sistema antigo. O sistema atual ($root_subvol) não é afetado."
+		confirm "apagar o conteúdo antigo da raiz?" || exit 1
+
+		for e in "${entries[@]}"; do
+			rm -rf --one-file-system -- "$e" && ((n++))
+		done
+		ok "$n itens apagados"
+	fi
+
+	umount_top
+	rm -f "/$migrate_mark"
+
+	echo
+	ok "migração concluída"
+	msg "próximo passo: sudo $app setup"
+}
+
+#-------------------------------------------------------------------------
 
 usage() {
 	cat <<EOF
@@ -457,6 +712,8 @@ Uso: $app <comando>
                      (sem N: o snapshot em que o sistema foi bootado)
   check [--notify]   avisa se o sistema foi bootado num snapshot
   setup              cria a config do snapper e libera o grupo wheel
+  migrate            converte o / da raiz do btrfs para o layout @/@home/@snapshots
+  migrate finish     depois do reboot: apaga o sistema antigo da raiz do btrfs
 
 Chamados pelos hooks do voidbr-xbps:
   pre                snapshot antes da transação
@@ -480,5 +737,6 @@ case ${1:-} in
 	restore) cmd_restore "${2:-}" ;;
 	check)   cmd_check "${2:-}" ;;
 	setup)   cmd_setup ;;
+	migrate) cmd_migrate "${2:-}" ;;
 	*)       usage ;;
 esac

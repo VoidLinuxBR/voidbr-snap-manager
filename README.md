@@ -48,6 +48,33 @@ Sem `voidbr-xbps` os hooks não rodam, mas `list`, `diff` e `restore` continuam 
 sudo xbps-install -S voidbr-snap-manager
 ```
 
+### Sistema instalado sem subvolumes
+
+Se o `/` estiver direto na raiz do btrfs (sem `@`), converta antes para o layout suportado:
+
+```sh
+sudo voidbr-snap-manager migrate
+```
+
+O `migrate`:
+
+- confere se dá para migrar (sem subvolumes existentes, sem swapfile ativo no btrfs, com GRUB);
+- cria o `@` como snapshot da raiz, o `@snapshots` e o `@home` (se o `/home` não estiver em outra partição), movendo o `/home` com reflink, sem gastar espaço;
+- ajusta o fstab **dentro do novo `@`** (o original fica em `/etc/fstab.pre-migrate`);
+- reinstala o GRUB e gera o `grub.cfg` a partir do novo `@`, conferindo o `rootflags=subvol=@`;
+- pede para reiniciar.
+
+Até aqui o sistema antigo continua inteiro na raiz do btrfs. Depois do reboot, confira se o sistema subiu no `@` e termine:
+
+```sh
+findmnt -no FSROOT /                      # /@
+sudo voidbr-snap-manager migrate finish   # apaga o sistema antigo da raiz
+```
+
+> Tire um backup antes. Por enquanto o `migrate` suporta só GRUB (UEFI, UEFI `--removable` e BIOS).
+
+### Configuração
+
 Depois, configure uma vez:
 
 ```sh
@@ -115,6 +142,8 @@ voidbr-snap-manager diff [N]           o que mudou na transação do pre N (padr
 sudo voidbr-snap-manager restore [N]   restaura o sistema para o snapshot N
 voidbr-snap-manager check [--notify]   avisa se o sistema foi iniciado num snapshot
 sudo voidbr-snap-manager setup         cria a config do snapper e libera o grupo wheel
+sudo voidbr-snap-manager migrate       converte o / da raiz do btrfs para @/@home/@snapshots
+sudo voidbr-snap-manager migrate finish   depois do reboot, apaga o sistema antigo
 ```
 
 `list` e `diff` rodam sem sudo para quem está no grupo `wheel`, depois do `setup`. Sem isso, use `sudo`.
