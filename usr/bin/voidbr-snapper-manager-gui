@@ -1,38 +1,55 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 #
-# voidbr-snapper-manager-gui - interface gráfica do voidbr-snapper-manager
+#   voidbr-snapper-manager-gui
+#   Created: sáb 26 set 2026 19:00:00 -04
+#   Altered: sáb 26 set 2026 19:45:00 -04
+#   Updated: sáb 26 set 2026 19:45:00 -04
 #
-# Copyright (c) 2026 Vilmar Catafesta <vcatafesta@gmail.com>
-# Site do projeto: https://voidbr.org
+#   Copyright (c) 2026, Vilmar Catafesta <vcatafesta@gmail.com>
+#   Copyright (c) 2026, ChiliLinux Development Team <https://chililinux.com> <https://github.com/chililinux>
+#   Assembled By Vilmar Catafesta for the VoidBR project.
+#   All rights reserved.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+#   ChangeLog:
+#   - v0.4.0 (2026-09-26): Versão inicial — GTK4 + PyGObject, no mesmo visual do
+#     voidbr-iso-writer (tema escuro, botões coloridos, emojis). Lista os
+#     snapshots, mostra as alterações de cada atualização, cria, apaga e
+#     restaura snapshots, avisa quando o sistema foi iniciado num snapshot.
 #
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
+#   Permission is hereby granted, free of charge, to any person obtaining a copy
+#   of this software and associated documentation files (the "Software"), to deal
+#   in the Software without restriction, including without limitation the rights
+#   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#   copies of the Software, and to permit persons to whom the Software is
+#   furnished to do so, subject to the following conditions:
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
+#   The above copyright notice and this permission notice shall be included in
+#   all copies or substantial portions of the Software.
 #
-# A GUI é só uma casca sobre o CLI /usr/bin/voidbr-snapper-manager:
-#   - leitura (list, diff, status) roda como o usuário (grupo wheel);
-#   - ações (create, delete, restore, setup) rodam via pkexec.
-#
+#   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+#   THE SOFTWARE.
+##############################################################################
+"""
+voidbr-snapper-manager-gui - Interface gráfica do voidbr-snapper-manager.
+
+A GUI é só uma casca sobre o CLI /usr/bin/voidbr-snapper-manager:
+  - leitura (list, diff, status) roda como o usuário (grupo wheel);
+  - ações (create, delete, restore, setup) rodam via pkexec.
+
+Requer: PyGObject (GTK4), polkit e o voidbr-snapper-manager.
+    sudo xbps-install -S python3-gobject gtk4 polkit
+"""
 
 import csv
 import io
 import re
 import subprocess
-import sys
 import threading
 
 import gi
@@ -40,45 +57,174 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
-APP_ID = "org.voidbr.SnapperManager"
-APP_NAME = "VoidBR Snapper Manager"
+APP_ID = "br.voidbr.snappermanager"
+APP_NAME = "voidbr-snapper-manager"
 APP_VERSION = "0.4.0"
 CLI = "/usr/bin/voidbr-snapper-manager"
 
-TYPE_LABELS = {"single": "manual", "pre": "antes", "post": "depois"}
+TIPOS = {"single": "📌 manual", "pre": "⏪ antes", "post": "⏩ depois"}
+
+CSS = """
+window {
+    background-color: #1e1f29;
+}
+
+label {
+    color: #f1f1f1;
+}
+
+.titulo-app {
+    font-size: 20px;
+    font-weight: 800;
+    color: #7dd3fc;
+}
+
+.subtitulo {
+    font-weight: bold;
+    color: #cbd5e1;
+}
+
+.botao-azul {
+    background: linear-gradient(180deg, #3b82f6, #2563eb);
+    color: white;
+    font-weight: bold;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+.botao-azul:hover { background: #3b82f6; }
+
+.botao-verde {
+    background: linear-gradient(180deg, #34d399, #059669);
+    color: white;
+    font-weight: bold;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+.botao-verde:hover { background: #34d399; }
+
+.botao-vermelho {
+    background: linear-gradient(180deg, #f87171, #dc2626);
+    color: white;
+    font-weight: bold;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+.botao-vermelho:hover { background: #f87171; }
+
+.botao-cinza {
+    background: linear-gradient(180deg, #9ca3af, #6b7280);
+    color: white;
+    font-weight: bold;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+.botao-cinza:hover { background: #9ca3af; }
+
+.botao-laranja {
+    background: linear-gradient(180deg, #fbbf24, #d97706);
+    color: white;
+    font-weight: bold;
+    border-radius: 10px;
+    padding: 8px 14px;
+}
+.botao-laranja:hover { background: #fbbf24; }
+
+button:disabled {
+    opacity: 0.45;
+}
+
+.caixa-status {
+    background-color: #2a2b3a;
+    border-radius: 10px;
+    padding: 8px;
+}
+
+.caixa-alerta {
+    background-color: #3b2f1a;
+    border: 1px solid #d97706;
+    border-radius: 10px;
+    padding: 8px;
+}
+
+.cabecalho-app {
+    background: #1a1b26;
+    color: #f1f1f1;
+    box-shadow: none;
+}
+
+.botao-menu {
+    border-radius: 8px;
+}
+
+.lista-snapshots {
+    background-color: #2a2b3a;
+    border-radius: 10px;
+}
+columnview {
+    background-color: #2a2b3a;
+    color: #f1f1f1;
+}
+columnview > header > button {
+    background: #1a1b26;
+    color: #7dd3fc;
+    font-weight: bold;
+}
+columnview > listview,
+columnview > listview > row {
+    background-color: #2a2b3a;
+    color: #f1f1f1;
+}
+columnview > listview > row:hover {
+    background-color: #33354a;
+}
+columnview > listview > row:selected {
+    background-color: #2563eb;
+}
+
+textview, textview text {
+    background-color: #2a2b3a;
+    color: #f1f1f1;
+}
+
+entry {
+    background-color: #2a2b3a;
+    color: #f1f1f1;
+    border-radius: 8px;
+}
+"""
 
 
 # ---------------------------------------------------------------------------
 # execução do CLI
 # ---------------------------------------------------------------------------
 
-def run_cli(args, root=False):
+def executar_cli(args, root=False):
     """Roda o CLI e devolve (código, stdout, stderr)."""
-    cmd = (["pkexec", CLI] if root else [CLI]) + args
+    comando = (["pkexec", CLI] if root else [CLI]) + args
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(comando, capture_output=True, text=True)
     except FileNotFoundError as e:
         return 127, "", str(e)
     return p.returncode, p.stdout, p.stderr
 
 
-def run_async(args, root, callback):
+def executar_async(args, root, callback):
     """Roda o CLI numa thread e chama callback(código, out, err) na thread da GUI."""
-    def worker():
-        rc, out, err = run_cli(args, root)
+    def trabalho():
+        rc, out, err = executar_cli(args, root)
         GLib.idle_add(callback, rc, out, err)
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=trabalho, daemon=True).start()
 
 
-def strip_ansi(text):
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+def sem_ansi(texto):
+    return re.sub(r"\x1b\[[0-9;]*m", "", texto)
 
 
-def parse_status(text):
+def ler_status(texto):
     st = {}
-    for line in text.splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
+    for linha in texto.splitlines():
+        if "=" in linha:
+            k, v = linha.split("=", 1)
             st[k.strip()] = v.strip()
     return st
 
@@ -87,413 +233,440 @@ def parse_status(text):
 # modelo
 # ---------------------------------------------------------------------------
 
-class SnapItem(GObject.Object):
-    __gtype_name__ = "SnapItem"
+class Snapshot(GObject.Object):
+    __gtype_name__ = "Snapshot"
 
-    def __init__(self, number, stype, pre, date, cleanup, desc, userdata):
+    def __init__(self, numero, tipo, pre, data, limpeza, descricao, userdata):
         super().__init__()
-        self.number = int(number)
-        self.stype = stype
+        self.numero = int(numero)
+        self.tipo = tipo
         self.pre = pre
-        self.date = date
-        self.cleanup = cleanup
-        self.desc = desc
-        self.important = "important=yes" in userdata
+        self.data = data
+        self.limpeza = limpeza
+        self.descricao = descricao
+        self.importante = "important=yes" in userdata
 
 
-def parse_list(text):
-    items = []
-    for row in csv.reader(io.StringIO(text)):
-        if len(row) < 7 or not row[0].isdigit():
-            continue
-        if row[0] == "0":
-            continue  # "current", o sistema em uso
-        items.append(SnapItem(*row[:7]))
-    items.sort(key=lambda i: i.number, reverse=True)
-    return items
+def ler_lista(texto):
+    itens = []
+    for linha in csv.reader(io.StringIO(texto)):
+        if len(linha) < 7 or not linha[0].isdigit() or linha[0] == "0":
+            continue  # cabeçalho ou o "current" (sistema em uso)
+        itens.append(Snapshot(*linha[:7]))
+    itens.sort(key=lambda i: i.numero, reverse=True)
+    return itens
 
 
 # ---------------------------------------------------------------------------
 # janela principal
 # ---------------------------------------------------------------------------
 
-class MainWindow(Gtk.ApplicationWindow):
+class JanelaSnapperManager(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title=APP_NAME)
-        self.set_default_size(980, 600)
+        self.set_default_size(960, 640)
         self.status = {}
-        self.busy = False
+        self.ocupado = False
 
-        # cabeçalho
-        header = Gtk.HeaderBar()
-        self.set_titlebar(header)
+        # --- CSS ---
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS.encode("utf-8"))
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        self.btn_create = self._button("list-add-symbolic", "Criar snapshot", self.on_create)
-        self.btn_delete = self._button("user-trash-symbolic", "Apagar snapshot", self.on_delete)
-        self.btn_diff = self._button("edit-find-symbolic", "Ver alterações", self.on_diff)
-        self.btn_restore = Gtk.Button(label="Restaurar")
-        self.btn_restore.add_css_class("destructive-action")
-        self.btn_restore.set_tooltip_text("Voltar o sistema para o snapshot selecionado")
-        self.btn_restore.connect("clicked", self.on_restore)
-
-        for b in (self.btn_create, self.btn_delete, self.btn_diff):
-            header.pack_start(b)
-        header.pack_start(self.btn_restore)
+        # --- Barra de título com menu ---
+        cabecalho = Gtk.HeaderBar()
+        cabecalho.add_css_class("cabecalho-app")
+        self.set_titlebar(cabecalho)
 
         menu = Gio.Menu()
-        menu.append("Configurar sistema (setup)", "win.setup")
-        menu.append("Atualizar", "win.refresh")
-        menu.append("Sobre", "win.about")
-        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
-        header.pack_end(menu_btn)
+        menu.append("⚙️ Configurar sistema", "win.configurar")
+        menu.append("🔄 Atualizar lista", "win.atualizar")
+        menu.append("ℹ️ Sobre / Créditos", "win.sobre")
+        botao_menu = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
+        botao_menu.add_css_class("botao-menu")
+        cabecalho.pack_end(botao_menu)
 
         self.spinner = Gtk.Spinner()
-        header.pack_end(self.spinner)
+        cabecalho.pack_end(self.spinner)
 
-        for name, cb in (("setup", self.on_setup), ("refresh", lambda *_: self.refresh()),
-                         ("about", self.on_about)):
-            act = Gio.SimpleAction.new(name, None)
-            act.connect("activate", cb)
-            self.add_action(act)
+        for nome, cb in (("configurar", self.ao_clicar_configurar),
+                         ("atualizar", lambda *_: self.atualizar()),
+                         ("sobre", self.ao_clicar_sobre)):
+            acao = Gio.SimpleAction.new(nome, None)
+            acao.connect("activate", cb)
+            self.add_action(acao)
 
-        # corpo
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.set_child(root)
+        caixa = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                        margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+        self.set_child(caixa)
 
-        # aviso: sistema iniciado num snapshot
-        self.banner = Gtk.Box(spacing=12, margin_top=6, margin_bottom=6,
-                              margin_start=12, margin_end=12)
-        self.banner_label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
-        self.banner_btn = Gtk.Button(label="Restaurar este snapshot")
-        self.banner_btn.add_css_class("suggested-action")
-        self.banner_btn.connect("clicked", self.on_restore_current)
-        self.banner.append(Gtk.Image.new_from_icon_name("dialog-warning-symbolic"))
-        self.banner.append(self.banner_label)
-        self.banner.append(self.banner_btn)
-        self.banner.set_visible(False)
-        root.append(self.banner)
+        # --- Título ---
+        titulo = Gtk.Label(label="📸 voidbr-snapper-manager", xalign=0)
+        titulo.add_css_class("titulo-app")
+        caixa.append(titulo)
 
-        # aviso: sistema precisa de setup/migrate
-        self.setup_bar = Gtk.Box(spacing=12, margin_top=6, margin_bottom=6,
-                                 margin_start=12, margin_end=12)
-        self.setup_label = Gtk.Label(xalign=0, hexpand=True, wrap=True)
-        self.setup_btn = Gtk.Button(label="Configurar")
-        self.setup_btn.add_css_class("suggested-action")
-        self.setup_btn.connect("clicked", self.on_setup)
-        self.setup_bar.append(Gtk.Image.new_from_icon_name("dialog-information-symbolic"))
-        self.setup_bar.append(self.setup_label)
-        self.setup_bar.append(self.setup_btn)
-        self.setup_bar.set_visible(False)
-        root.append(self.setup_bar)
+        # --- Aviso: sistema iniciado num snapshot ---
+        self.caixa_boot = Gtk.Box(spacing=10)
+        self.caixa_boot.add_css_class("caixa-alerta")
+        self.label_boot = Gtk.Label(xalign=0, hexpand=True, wrap=True)
+        botao_boot = Gtk.Button(label="♻️ Restaurar este snapshot")
+        botao_boot.add_css_class("botao-verde")
+        botao_boot.connect("clicked", self.ao_clicar_restaurar_atual)
+        self.caixa_boot.append(self.label_boot)
+        self.caixa_boot.append(botao_boot)
+        self.caixa_boot.set_visible(False)
+        caixa.append(self.caixa_boot)
 
-        # lista de snapshots
-        self.store = Gio.ListStore(item_type=SnapItem)
-        self.selection = Gtk.SingleSelection(model=self.store, autoselect=False)
-        self.selection.connect("notify::selected", lambda *_: self.update_buttons())
+        # --- Aviso: sistema precisa de setup/migrate ---
+        self.caixa_setup = Gtk.Box(spacing=10)
+        self.caixa_setup.add_css_class("caixa-alerta")
+        self.label_setup = Gtk.Label(xalign=0, hexpand=True, wrap=True)
+        self.botao_setup = Gtk.Button(label="⚙️ Configurar")
+        self.botao_setup.add_css_class("botao-azul")
+        self.botao_setup.connect("clicked", self.ao_clicar_configurar)
+        self.caixa_setup.append(self.label_setup)
+        self.caixa_setup.append(self.botao_setup)
+        self.caixa_setup.set_visible(False)
+        caixa.append(self.caixa_setup)
 
-        view = Gtk.ColumnView(model=self.selection, show_row_separators=True, vexpand=True)
-        view.connect("activate", lambda *_: self.on_diff())
-        self._column(view, "#", lambda i: str(i.number))
-        self._column(view, "Tipo", lambda i: TYPE_LABELS.get(i.stype, i.stype))
-        self._column(view, "Par", lambda i: i.pre)
-        self._column(view, "Data", lambda i: i.date)
-        self._column(view, "Descrição", lambda i: i.desc, expand=True)
-        self._column(view, "Importante", lambda i: "★" if i.important else "")
+        # --- Lista de snapshots ---
+        rotulo = Gtk.Label(label="🗂️ Snapshots do sistema:", xalign=0)
+        rotulo.add_css_class("subtitulo")
+        caixa.append(rotulo)
 
-        scroll = Gtk.ScrolledWindow(vexpand=True)
-        scroll.set_child(view)
-        root.append(scroll)
+        self.modelo = Gio.ListStore(item_type=Snapshot)
+        self.selecao = Gtk.SingleSelection(model=self.modelo, autoselect=False)
+        self.selecao.connect("notify::selected", lambda *_: self.atualizar_botoes())
 
-        # rodapé com o estado
-        self.statusbar = Gtk.Label(xalign=0, margin_top=6, margin_bottom=6,
-                                   margin_start=12, margin_end=12)
-        self.statusbar.add_css_class("dim-label")
-        root.append(Gtk.Separator())
-        root.append(self.statusbar)
+        tabela = Gtk.ColumnView(model=self.selecao, show_row_separators=True)
+        tabela.connect("activate", lambda *_: self.ao_clicar_alteracoes())
+        self._coluna(tabela, "#", lambda s: str(s.numero))
+        self._coluna(tabela, "Tipo", lambda s: TIPOS.get(s.tipo, s.tipo))
+        self._coluna(tabela, "Par", lambda s: s.pre)
+        self._coluna(tabela, "Data", lambda s: s.data)
+        self._coluna(tabela, "Descrição", lambda s: s.descricao, expandir=True)
+        self._coluna(tabela, "⭐", lambda s: "⭐" if s.importante else "")
 
-        self.refresh()
+        rolagem = Gtk.ScrolledWindow(vexpand=True)
+        rolagem.add_css_class("lista-snapshots")
+        rolagem.set_child(tabela)
+        caixa.append(rolagem)
+
+        # --- Status ---
+        caixa_status = Gtk.Box()
+        caixa_status.add_css_class("caixa-status")
+        self.label_status = Gtk.Label(label="⏳ Carregando…", xalign=0, hexpand=True, wrap=True)
+        caixa_status.append(self.label_status)
+        caixa.append(caixa_status)
+
+        # --- Ações ---
+        linha_acoes = Gtk.Box(spacing=8, homogeneous=True)
+        self.botao_criar = self._botao("➕ Criar snapshot", "botao-azul", self.ao_clicar_criar)
+        self.botao_alteracoes = self._botao("🔍 Ver alterações", "botao-laranja",
+                                            self.ao_clicar_alteracoes)
+        self.botao_restaurar = self._botao("♻️ Restaurar", "botao-verde", self.ao_clicar_restaurar)
+        self.botao_apagar = self._botao("🗑️ Apagar", "botao-vermelho", self.ao_clicar_apagar)
+        for b in (self.botao_criar, self.botao_alteracoes, self.botao_restaurar, self.botao_apagar):
+            linha_acoes.append(b)
+        caixa.append(linha_acoes)
+
+        # --- Fechar ---
+        caixa.append(self._botao("🚪 Fechar", "botao-cinza", lambda *_: self.close()))
+
+        self.atualizar()
 
     # -- helpers de construção ---------------------------------------------
 
-    def _button(self, icon, tooltip, cb):
-        b = Gtk.Button(icon_name=icon, tooltip_text=tooltip)
+    def _botao(self, texto, classe, cb):
+        b = Gtk.Button(label=texto)
+        b.add_css_class(classe)
         b.connect("clicked", cb)
         return b
 
-    def _column(self, view, title, getter, expand=False):
-        factory = Gtk.SignalListItemFactory()
+    def _coluna(self, tabela, titulo, valor, expandir=False):
+        fabrica = Gtk.SignalListItemFactory()
 
-        def setup(_f, li):
-            lbl = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
-            li.set_child(lbl)
+        def setup(_f, item):
+            item.set_child(Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END))
 
-        def bind(_f, li):
-            li.get_child().set_text(getter(li.get_item()))
+        def bind(_f, item):
+            item.get_child().set_text(valor(item.get_item()))
 
-        factory.connect("setup", setup)
-        factory.connect("bind", bind)
-        col = Gtk.ColumnViewColumn(title=title, factory=factory, expand=expand, resizable=True)
-        view.append_column(col)
+        fabrica.connect("setup", setup)
+        fabrica.connect("bind", bind)
+        tabela.append_column(Gtk.ColumnViewColumn(title=titulo, factory=fabrica,
+                                                  expand=expandir, resizable=True))
 
     # -- estado ------------------------------------------------------------
 
-    def items(self):
-        return [self.store.get_item(i) for i in range(self.store.get_n_items())]
+    def itens(self):
+        return [self.modelo.get_item(i) for i in range(self.modelo.get_n_items())]
 
-    def selected(self):
-        return self.selection.get_selected_item()
+    def selecionado(self):
+        return self.selecao.get_selected_item()
 
-    def set_busy(self, busy):
-        self.busy = busy
-        if busy:
+    def set_ocupado(self, ocupado):
+        self.ocupado = ocupado
+        if ocupado:
             self.spinner.start()
         else:
             self.spinner.stop()
-        self.update_buttons()
+        self.atualizar_botoes()
 
-    def update_buttons(self):
-        item = self.selected()
-        ready = self.status.get("config") == "yes" and not self.busy
-        in_snap = bool(self.status.get("booted_snapshot"))
-        self.btn_create.set_sensitive(ready and not in_snap)
-        self.btn_delete.set_sensitive(ready and item is not None)
-        self.btn_diff.set_sensitive(ready and item is not None and item.stype in ("pre", "post"))
-        self.btn_restore.set_sensitive(ready and item is not None)
+    def atualizar_botoes(self):
+        item = self.selecionado()
+        pronto = self.status.get("config") == "yes" and not self.ocupado
+        no_snapshot = bool(self.status.get("booted_snapshot"))
+        self.botao_criar.set_sensitive(pronto and not no_snapshot)
+        self.botao_apagar.set_sensitive(pronto and item is not None)
+        self.botao_alteracoes.set_sensitive(pronto and item is not None
+                                            and item.tipo in ("pre", "post"))
+        self.botao_restaurar.set_sensitive(pronto and item is not None)
 
-    def refresh(self):
-        self.set_busy(True)
-        run_async(["status"], False, self._on_status)
+    def atualizar(self):
+        self.set_ocupado(True)
+        executar_async(["status"], False, self._ao_ler_status)
 
-    def _on_status(self, rc, out, err):
-        self.status = parse_status(out) if rc == 0 else {}
-        self.update_banners()
-        self.update_statusbar()
+    def _ao_ler_status(self, rc, out, err):
+        self.status = ler_status(out) if rc == 0 else {}
+        self.atualizar_avisos()
+        self.atualizar_status()
         if self.status.get("config") == "yes":
-            run_async(["list", "--csv"], False, self._on_list)
+            executar_async(["list", "--csv"], False, self._ao_ler_lista)
         else:
-            self.store.remove_all()
-            self.set_busy(False)
+            self.modelo.remove_all()
+            self.set_ocupado(False)
         return False
 
-    def _on_list(self, rc, out, err):
-        self.store.remove_all()
+    def _ao_ler_lista(self, rc, out, err):
+        self.modelo.remove_all()
+        self.set_ocupado(False)
         if rc != 0:
-            self.set_busy(False)
-            msg = strip_ansi(err).strip() or "falha ao listar os snapshots"
+            msg = sem_ansi(err).strip() or "falha ao listar os snapshots"
             if "permiss" in msg.lower():
-                msg += "\n\nSeu usuário precisa estar no grupo wheel e o sistema configurado (setup)."
-            self.error("Não foi possível listar os snapshots", msg)
+                msg += ("\n\nSeu usuário precisa estar no grupo wheel e o sistema "
+                        "configurado (menu ☰ → Configurar sistema).")
+            self.erro("Não foi possível listar os snapshots", msg)
             return False
-        for item in parse_list(out):
-            self.store.append(item)
-        self.set_busy(False)
+        for item in ler_lista(out):
+            self.modelo.append(item)
         return False
 
-    def update_banners(self):
+    def atualizar_avisos(self):
         st = self.status
         n = st.get("booted_snapshot")
         if n:
-            self.banner_label.set_markup(
-                f"<b>O sistema foi iniciado a partir do snapshot {n}.</b> "
+            self.label_boot.set_markup(
+                f"⚠️ <b>O sistema foi iniciado a partir do snapshot {n}.</b>\n"
                 "Para torná-lo o sistema principal, restaure-o.")
-        self.banner.set_visible(bool(n))
+        self.caixa_boot.set_visible(bool(n))
 
         layout = st.get("layout")
-        text = None
-        show_btn = True
-        if layout == "nobtrfs" or not st:
-            text, show_btn = "O / não está em btrfs. Os snapshots não estão disponíveis.", False
+        texto, com_botao = None, True
+        if not st or layout == "nobtrfs":
+            texto, com_botao = "⚠️ O / não está em btrfs. Os snapshots não estão disponíveis.", False
         elif layout == "toplevel":
-            text = ("O / está direto na raiz do btrfs, sem subvolumes. Para usar os snapshots, "
-                    "converta pelo terminal: <tt>sudo voidbr-snapper-manager migrate</tt>")
-            show_btn = False
+            texto = ("⚠️ O / está direto na raiz do btrfs, sem subvolumes.\n"
+                     "Converta pelo terminal: <tt>sudo voidbr-snapper-manager migrate</tt>")
+            com_botao = False
         elif layout == "other":
-            text, show_btn = "Layout btrfs não suportado (esperado: @, @home, @snapshots).", False
-        elif layout == "flat" and (st.get("config") != "yes" or st.get("grub_btrfs") != "active"
-                                   or st.get("wheel") != "yes"):
-            text = "O sistema ainda não está configurado para os snapshots."
-        if text:
-            self.setup_label.set_markup(text)
-            self.setup_btn.set_visible(show_btn)
-        self.setup_bar.set_visible(text is not None)
+            texto, com_botao = ("⚠️ Layout btrfs não suportado "
+                                "(esperado: @, @home, @snapshots)."), False
+        elif layout == "flat" and (st.get("config") != "yes" or st.get("wheel") != "yes"
+                                   or st.get("grub_btrfs") != "active"):
+            texto = "⚙️ O sistema ainda não está configurado para os snapshots."
+        if texto:
+            self.label_setup.set_markup(texto)
+            self.botao_setup.set_visible(com_botao)
+        self.caixa_setup.set_visible(texto is not None)
 
-    def update_statusbar(self):
+    def atualizar_status(self):
         st = self.status
         if not st:
-            self.statusbar.set_text("não foi possível ler o estado do sistema")
+            self.label_status.set_text("❌ Não foi possível ler o estado do sistema.")
             return
 
-        def mark(ok):
-            return "✓" if ok else "✗"
+        def ok(v):
+            return "✅" if v else "❌"
 
-        gb = {"active": "ativo", "inactive": "inativo", "missing": "ausente"}.get(
-            st.get("grub_btrfs", ""), "?")
-        parts = [
-            f"Layout: {st.get('fsroot') or '-'}",
-            f"snapper {mark(st.get('config') == 'yes')}",
-            f"hooks xbps {mark(st.get('hooks') == 'yes')}",
-            f"grub-btrfs {gb}",
-            f"Disco: {st.get('disk_used', '?')} de {st.get('disk_size', '?')}",
+        gb = {"active": "✅ grub-btrfs ativo", "inactive": "⚠️ grub-btrfs inativo",
+              "missing": "❌ grub-btrfs ausente"}.get(st.get("grub_btrfs", ""), "❓ grub-btrfs")
+        partes = [
+            f"📍 Sistema: {st.get('fsroot') or '-'}",
+            f"{ok(st.get('config') == 'yes')} snapper",
+            f"{ok(st.get('hooks') == 'yes')} hooks xbps",
+            gb,
+            f"💾 {st.get('disk_used', '?')} de {st.get('disk_size', '?')}",
         ]
-        self.statusbar.set_text("   •   ".join(parts))
+        self.label_status.set_text("   •   ".join(partes))
 
     # -- diálogos ----------------------------------------------------------
 
-    def error(self, title, detail=""):
-        d = Gtk.AlertDialog(message=title, detail=detail, modal=True)
+    def erro(self, titulo, detalhe=""):
+        d = Gtk.AlertDialog(message=f"❌ {titulo}", detail=detalhe, modal=True)
         d.show(self)
 
-    def ask(self, title, detail, ok_label, callback):
-        d = Gtk.AlertDialog(message=title, detail=detail, modal=True,
-                            buttons=["Cancelar", ok_label], cancel_button=0, default_button=0)
+    def perguntar(self, titulo, detalhe, botao_ok, callback):
+        d = Gtk.AlertDialog(message=titulo, detail=detalhe, modal=True,
+                            buttons=["❌ Cancelar", botao_ok],
+                            cancel_button=0, default_button=0)
 
-        def done(dlg, res):
+        def resposta(dlg, res):
             try:
                 if dlg.choose_finish(res) == 1:
                     callback()
             except GLib.Error:
                 pass
-        d.choose(self, None, done)
+        d.choose(self, None, resposta)
 
-    def run_root(self, args, on_ok, fail_title):
-        self.set_busy(True)
+    def executar_root(self, args, ao_concluir, titulo_falha):
+        self.set_ocupado(True)
 
-        def done(rc, out, err):
-            self.set_busy(False)
+        def fim(rc, out, err):
+            self.set_ocupado(False)
             if rc == 0:
-                on_ok(out)
-            elif rc in (126, 127):
-                pass  # autenticação cancelada no pkexec
-            else:
-                self.error(fail_title, strip_ansi(err or out).strip())
-            self.refresh()
+                ao_concluir(out)
+            elif rc not in (126, 127):  # 126/127: autenticação cancelada no pkexec
+                self.erro(titulo_falha, sem_ansi(err or out).strip())
+            self.atualizar()
             return False
-        run_async(args, True, done)
+        executar_async(args, True, fim)
+
+    def mostrar_texto(self, titulo, texto):
+        janela = Gtk.Window(title=titulo, transient_for=self,
+                            default_width=760, default_height=520)
+        tv = Gtk.TextView(editable=False, monospace=True, cursor_visible=False,
+                          left_margin=10, right_margin=10, top_margin=10, bottom_margin=10)
+        tv.get_buffer().set_text(texto)
+        rolagem = Gtk.ScrolledWindow()
+        rolagem.set_child(tv)
+        janela.set_child(rolagem)
+        janela.present()
 
     # -- ações -------------------------------------------------------------
 
-    def on_create(self, *_):
+    def ao_clicar_criar(self, *_):
         dlg = Gtk.Window(title="Criar snapshot", transient_for=self, modal=True,
-                         default_width=420)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
-                      margin_top=16, margin_bottom=16, margin_start=16, margin_end=16)
-        box.append(Gtk.Label(label="Descrição do snapshot:", xalign=0))
-        entry = Gtk.Entry(text="manual", activates_default=True)
-        box.append(entry)
-        btns = Gtk.Box(spacing=8, halign=Gtk.Align.END)
-        cancel = Gtk.Button(label="Cancelar")
-        create = Gtk.Button(label="Criar")
-        create.add_css_class("suggested-action")
-        btns.append(cancel)
-        btns.append(create)
-        box.append(btns)
-        dlg.set_child(box)
-        dlg.set_default_widget(create)
+                         default_width=440)
+        caixa = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                        margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+        caixa.append(Gtk.Label(label="📝 Descrição do snapshot:", xalign=0))
+        entrada = Gtk.Entry(text="manual", activates_default=True)
+        caixa.append(entrada)
+        linha = Gtk.Box(spacing=8, homogeneous=True)
+        cancelar = self._botao("❌ Cancelar", "botao-cinza", lambda *_: dlg.close())
+        criar = Gtk.Button(label="➕ Criar")
+        criar.add_css_class("botao-azul")
+        linha.append(cancelar)
+        linha.append(criar)
+        caixa.append(linha)
+        dlg.set_child(caixa)
+        dlg.set_default_widget(criar)
 
-        cancel.connect("clicked", lambda *_: dlg.close())
-
-        def do_create(*_):
-            desc = entry.get_text().strip() or "manual"
+        def confirmar(*_):
+            desc = entrada.get_text().strip() or "manual"
             dlg.close()
-            self.run_root(["create", desc], lambda out: None, "Falha ao criar o snapshot")
-        create.connect("clicked", do_create)
+            self.executar_root(["create", desc], lambda out: None, "Falha ao criar o snapshot")
+        criar.connect("clicked", confirmar)
         dlg.present()
 
-    def on_delete(self, *_):
-        item = self.selected()
+    def ao_clicar_apagar(self, *_):
+        item = self.selecionado()
         if not item:
             return
-        nums = [str(item.number)]
+        nums = {item.numero}
         # apagar um pre/post leva o par junto
-        for other in self.items():
-            if item.stype == "pre" and other.stype == "post" and other.pre == str(item.number):
-                nums.append(str(other.number))
-            if item.stype == "post" and other.number == int(item.pre or 0):
-                nums.append(str(other.number))
-        nums = sorted(set(nums), key=int)
-        self.ask(f"Apagar o(s) snapshot(s) {', '.join(nums)}?",
-                 f"{item.desc}\n\nIsso não pode ser desfeito.", "Apagar",
-                 lambda: self.run_root(["delete", *nums], lambda out: None,
-                                       "Falha ao apagar"))
+        for outro in self.itens():
+            if item.tipo == "pre" and outro.tipo == "post" and outro.pre == str(item.numero):
+                nums.add(outro.numero)
+            if item.tipo == "post" and item.pre and outro.numero == int(item.pre):
+                nums.add(outro.numero)
+        nums = [str(n) for n in sorted(nums)]
+        self.perguntar(f"🗑️ Apagar o(s) snapshot(s) {', '.join(nums)}?",
+                       f"{item.descricao}\n\nEsta ação não pode ser desfeita.", "🗑️ Apagar",
+                       lambda: self.executar_root(["delete", *nums], lambda out: None,
+                                                  "Falha ao apagar"))
 
-    def on_diff(self, *_):
-        item = self.selected()
-        if not item or item.stype not in ("pre", "post"):
+    def ao_clicar_alteracoes(self, *_):
+        item = self.selecionado()
+        if not item or item.tipo not in ("pre", "post"):
             return
-        pre = item.number if item.stype == "pre" else int(item.pre)
-        self.set_busy(True)
+        pre = item.numero if item.tipo == "pre" else int(item.pre)
+        self.set_ocupado(True)
 
-        def done(rc, out, err):
-            self.set_busy(False)
+        def fim(rc, out, err):
+            self.set_ocupado(False)
             if rc != 0:
-                self.error("Não foi possível ver as alterações", strip_ansi(err).strip())
-                return False
-            self.show_text(f"Alterações do snapshot {pre}", strip_ansi(out))
+                self.erro("Não foi possível ver as alterações", sem_ansi(err).strip())
+            else:
+                self.mostrar_texto(f"🔍 Alterações do snapshot {pre}", sem_ansi(out))
             return False
-        run_async(["diff", str(pre)], False, done)
+        executar_async(["diff", str(pre)], False, fim)
 
-    def show_text(self, title, text):
-        win = Gtk.Window(title=title, transient_for=self, default_width=760, default_height=520)
-        tv = Gtk.TextView(editable=False, monospace=True, cursor_visible=False,
-                          left_margin=8, right_margin=8, top_margin=8, bottom_margin=8)
-        tv.get_buffer().set_text(text)
-        sw = Gtk.ScrolledWindow()
-        sw.set_child(tv)
-        win.set_child(sw)
-        win.present()
-
-    def on_restore(self, *_):
-        item = self.selected()
+    def ao_clicar_restaurar(self, *_):
+        item = self.selecionado()
         if item:
-            self.confirm_restore(item.number, item.desc)
+            self.confirmar_restauracao(item.numero, item.descricao)
 
-    def on_restore_current(self, *_):
+    def ao_clicar_restaurar_atual(self, *_):
         n = self.status.get("booted_snapshot")
         if n:
-            desc = next((i.desc for i in self.items() if str(i.number) == n), "")
-            self.confirm_restore(int(n), desc)
+            desc = next((i.descricao for i in self.itens() if str(i.numero) == n), "")
+            self.confirmar_restauracao(int(n), desc)
 
-    def confirm_restore(self, n, desc):
+    def confirmar_restauracao(self, n, desc):
         extra = ""
         if not self.status.get("booted_snapshot"):
-            extra = ("\n\nRecomendado: iniciar primeiro no snapshot pelo menu do GRUB "
+            extra = ("\n\n⚠️ Recomendado: iniciar primeiro no snapshot pelo menu do GRUB "
                      "e restaurar a partir dele.")
-        self.ask(f"Restaurar o sistema para o snapshot {n}?",
-                 f"{desc}\n\nO sistema atual será guardado como um novo snapshot "
-                 f"(nada é apagado). Depois é preciso reiniciar.{extra}",
-                 "Restaurar", lambda: self.run_root(["restore", str(n), "--yes"],
-                                                    lambda out: self.ask_reboot(n),
-                                                    "Falha ao restaurar"))
+        self.perguntar(f"♻️ Restaurar o sistema para o snapshot {n}?",
+                       f"{desc}\n\nO sistema atual será guardado como um novo snapshot "
+                       f"(nada é apagado). Depois é preciso reiniciar.{extra}",
+                       "♻️ Restaurar",
+                       lambda: self.executar_root(["restore", str(n), "--yes"],
+                                                  lambda out: self.perguntar_reinicio(n),
+                                                  "Falha ao restaurar"))
 
-    def ask_reboot(self, n):
-        self.ask(f"Sistema restaurado para o snapshot {n}",
-                 "Reinicie e escolha a entrada NORMAL do sistema no menu de boot.",
-                 "Reiniciar agora",
-                 lambda: subprocess.Popen(["pkexec", "reboot"]))
+    def perguntar_reinicio(self, n):
+        self.perguntar(f"✅ Sistema restaurado para o snapshot {n}",
+                       "Reinicie e escolha a entrada NORMAL do sistema no menu de boot.",
+                       "🔁 Reiniciar agora",
+                       lambda: subprocess.Popen(["pkexec", "reboot"]))
 
-    def on_setup(self, *_):
-        self.run_root(["setup"], lambda out: self.show_text("Configuração", strip_ansi(out)),
-                      "Falha na configuração")
+    def ao_clicar_configurar(self, *_):
+        self.executar_root(["setup"],
+                           lambda out: self.mostrar_texto("⚙️ Configuração", sem_ansi(out)),
+                           "Falha na configuração")
 
-    def on_about(self, *_):
-        about = Gtk.AboutDialog(transient_for=self, modal=True,
-                                program_name=APP_NAME, version=APP_VERSION,
-                                comments="Snapshots btrfs + snapper integrados ao xbps",
-                                website="https://voidbr.org",
-                                authors=["Vilmar Catafesta <vcatafesta@gmail.com>"],
-                                license_type=Gtk.License.MIT_X11,
-                                logo_icon_name="document-revert")
-        about.present()
+    def ao_clicar_sobre(self, *_):
+        sobre = Gtk.AboutDialog()
+        sobre.set_transient_for(self)
+        sobre.set_modal(True)
+        sobre.set_program_name(APP_NAME)
+        sobre.set_version(APP_VERSION)
+        sobre.set_logo_icon_name("document-revert-symbolic")
+        sobre.set_comments(
+            "📸 Snapshots btrfs + snapper integrados ao xbps, feito com Python + GTK4.\n"
+            "Desenvolvido para o VoidBR Linux 🐧"
+        )
+        sobre.set_website("https://voidbr.org")
+        sobre.set_website_label("VoidBR")
+        sobre.set_authors(["Vilmar Catafesta <vcatafesta@gmail.com>"])
+        sobre.set_copyright("© 2026 Vilmar Catafesta — Licença livre, use e modifique à vontade")
+        sobre.set_license_type(Gtk.License.MIT_X11)
+        sobre.present()
 
 
-class App(Gtk.Application):
+class AppSnapperManager(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(application_id=APP_ID)
 
     def do_activate(self):
-        win = self.props.active_window or MainWindow(self)
-        win.present()
+        janela = self.props.active_window or JanelaSnapperManager(self)
+        janela.present()
 
 
 if __name__ == "__main__":
-    sys.exit(App().run(sys.argv))
+    app = AppSnapperManager()
+    app.run(None)
