@@ -181,6 +181,17 @@ Ou pelo menu, em **VoidBR Snapper Manager**. A janela mostra os snapshots (com o
 
 As ações (criar, apagar, restaurar, configurar) pedem a senha pelo polkit. No Hyprland é preciso ter um agente polkit rodando (por exemplo, `hyprpolkitagent`).
 
+### Limine
+
+O Limine não lê btrfs: o kernel e o initramfs precisam estar na ESP. O `update-limine` do VoidBR:
+
+- adiciona `rootflags=subvol=@` nas entradas do sistema;
+- chama `voidbr-snapper-manager limine-entries`, que gera o submenu **Snapshots do sistema** no `limine.conf`, com uma entrada por snapshot (`rootflags=subvol=@snapshots/N/snapshot`).
+
+Cada snapshot usa o kernel que estava instalado nele. Se for a mesma versão que já está na ESP, os arquivos são reaproveitados. Se não, o kernel/initramfs do snapshot é copiado para `/boot/efi/limine/snapshots/` (deduplicado por hash), desde que caiba, e os kernels do sistema sempre têm prioridade no espaço. O menu é refeito a cada snapshot criado ou apagado.
+
+No `restore` com Limine, os kernels da ESP são recopiados a partir do `@` restaurado. Se o snapshot tiver outro kernel, o restore exige que o sistema tenha sido iniciado nele pelo menu de boot.
+
 ### Pular o snapshot numa transação
 
 ```sh
@@ -232,7 +243,7 @@ Os limites de quantos snapshots manter ficam no próprio snapper, em `/etc/snapp
 
 ## Limitações
 
-- **Limine:** o restore funciona igual, mas bootar num snapshot depende de o menu do Limine listar os snapshots. Por enquanto, use o GRUB (grub-btrfs) ou um live para entrar no snapshot.
+- **Limine e espaço na ESP:** o Limine só lê a ESP (FAT). Snapshots com o mesmo kernel do sistema reaproveitam os arquivos que já estão lá, sem custo. Snapshots com um kernel que não existe mais precisam de cópia própria e só entram no menu se couberem na ESP. Com ESP pequena (128 MB), na prática só entram os snapshots com o kernel atual.
 - **`/home`** não volta no tempo. Só o sistema (`@`) é restaurado.
 - Com o `/var/log` dentro do `@`, os logs também voltam junto com o snapshot.
 - Não use `snapper rollback` nesse layout, porque ele não tem efeito. Use `voidbr-snapper-manager restore`.

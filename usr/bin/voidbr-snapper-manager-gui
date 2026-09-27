@@ -12,6 +12,8 @@
 #   All rights reserved.
 #
 #   ChangeLog:
+#   - v0.5.0 (2026-09-26): Suporte ao Limine no rodapé (bootloader detectado);
+#     o aviso de configuração só exige grub-btrfs quando o GRUB está em uso.
 #   - v0.4.0 (2026-09-26): Versão inicial — GTK4 + PyGObject, no mesmo visual do
 #     voidbr-iso-writer (tema escuro, botões coloridos, emojis). Lista os
 #     snapshots, mostra as alterações de cada atualização, cria, apaga e
@@ -63,7 +65,7 @@ from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 APP_ID = "br.voidbr.snappermanager"
 APP_NAME = "voidbr-snapper-manager"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 CLI = "/usr/bin/voidbr-snapper-manager"
 
 TIPOS = {"single": "📌 manual", "pre": "⏪ antes", "post": "⏩ depois"}
@@ -507,7 +509,8 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
                      "na raiz do btrfs (migrate finish).")
             botao = ("🧹 Concluir migração", "botao-laranja", self.ao_clicar_migrar_finish)
         elif layout == "flat" and (st.get("config") != "yes" or st.get("wheel") != "yes"
-                                   or st.get("grub_btrfs") != "active"):
+                                   or ("grub" in st.get("bootloader", "")
+                                       and st.get("grub_btrfs") != "active")):
             texto = "⚙️ O sistema ainda não está configurado para os snapshots."
             botao = ("⚙️ Configurar", "botao-azul", self.ao_clicar_configurar)
         if texto:
@@ -531,13 +534,21 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
         def ok(v):
             return "✅" if v else "❌"
 
-        gb = {"active": "✅ grub-btrfs ativo", "inactive": "⚠️ grub-btrfs inativo",
-              "missing": "❌ grub-btrfs ausente"}.get(st.get("grub_btrfs", ""), "❓ grub-btrfs")
+        bl = st.get("bootloader", "unknown")
         partes = [
             f"📍 Sistema: {st.get('fsroot') or '-'}",
             f"{ok(st.get('config') == 'yes')} snapper",
             f"{ok(st.get('hooks') == 'yes')} hooks xbps",
-            gb,
+        ]
+        if "grub" in bl:
+            partes.append({"active": "✅ grub-btrfs ativo", "inactive": "⚠️ grub-btrfs inativo",
+                           "missing": "❌ grub-btrfs ausente"}.get(st.get("grub_btrfs", ""),
+                                                                "❓ grub-btrfs"))
+        if "limine" in bl:
+            partes.append("✅ limine")
+        if bl == "unknown":
+            partes.append("❓ bootloader")
+        partes += [
             f"💾 {st.get('disk_used', '?')} de {st.get('disk_size', '?')}",
         ]
         self.label_status.set_text("   •   ".join(partes))

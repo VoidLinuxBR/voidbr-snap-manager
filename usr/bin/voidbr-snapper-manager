@@ -20,6 +20,7 @@
 #   check [--notify]   avisa se o sistema foi bootado num snapshot
 #   setup              cria a config do snapper no layout certo e libera o wheel
 #   migrate [finish]   converte o / da raiz do btrfs para o layout @/@home/@snapshots
+#   limine-entries     gera o submenu de snapshots do Limine (chamado pelo update-limine)
 #
 
 set -uo pipefail
@@ -37,6 +38,11 @@ snap_subvol="@snapshots"
 abort_on_fail="no"
 important_pkgs="linux* glibc xbps voidbr-xbps grub* limine*"
 desc_max=120
+snapshots_dir="/.snapshots"
+limine_dest="/boot/efi/limine"
+limine_prefix="/limine"
+limine_max_snapshots=10
+limine_esp_reserve_mb=8
 
 # shellcheck source=/dev/null
 [[ -r $conf_file ]] && . "$conf_file"
@@ -194,6 +200,150 @@ cmd_post() {
 		hook_fail "snapper create -t post"
 
 	ok "snapshot post $num criado (par do $pre)"
+	limine_refresh
+}
+
+#-------------------------------------------------------------------------
+# Limine
+#
+# O Limine só lê FAT (a ESP), não lê btrfs. Por isso o kernel/initramfs
+# de cada snapshot precisa estar na ESP. O update-limine gera o
+# limine.conf inteiro e chama "voidbr-snapper-manager limine-entries"
+# para incluir o submenu de snapshots.
+#
+# Para economizar a ESP, cada snapshot reaproveita o kernel/initramfs que
+# o update-limine já copiou para $limine_dest quando a versão é a mesma.
+# Só snapshots com kernel que não existe mais no sistema recebem cópia
+# própria, em $limine_dest/snapshots/ (deduplicada por hash), e só se
+# couber na ESP.
+#-------------------------------------------------------------------------
+
+has_limine() {
+	command -v update-limine >/dev/null && [[ -f $limine_dest/limine.conf ]]
+}
+
+has_grub() {
+	command -v grub-mkconfig >/dev/null && [[ -f /boot/grub/grub.cfg ]]
+}
+
+# o update-limine instalado já tem suporte a rootflags e ao submenu?
+limine_patched() {
+	grep -q "$app limine-entries" "$(command -v update-limine)" 2>/dev/null
+}
+
+# regenera o limine.conf (kernels + submenu de snapshots)
+limine_refresh() {
+	has_limine || return 0
+	if ! limine_patched; then
+		warn "o update-limine instalado não gera o submenu de snapshots (versão antiga)"
+		return 0
+	fi
+	update-limine >/dev/null 2>&1 || warn "falha ao atualizar o menu do Limine (update-limine)"
+}
+
+# kernel mais novo dentro de um /boot: imprime a versão
+newest_kernel_in() {
+	local f v best=""
+	for f in "$1"/vmlinuz-*; do
+		[[ -f $f ]] || continue
+		v=${f##*/vmlinuz-}
+		best=$(printf '%s\n%s\n' "$best" "$v" | sed '/^$/d' | sort -V | tail -n1)
+	done
+	printf '%s' "$best"
+}
+
+lim_used=()
+lim_ref=""
+
+# acha (ou copia) na ESP um arquivo do snapshot; resultado em $lim_ref
+# $1 = arquivo no snapshot   $2 = nome na ESP (ex: vmlinuz-6.6.30_1)
+# $3 = "reuse" para aceitar a cópia principal mesmo com conteúdo diferente
+lim_file() {
+	local src=$1 main=$2 mode=${3:-} dest=$lim_dest sdir="$lim_dest/snapshots" h name need avail
+	lim_ref=""
+	if [[ -f $dest/$main ]] && { cmp -s "$src" "$dest/$main" || [[ $mode == reuse ]]; }; then
+		lim_ref="$lim_prefix/$main"
+		return 0
+	fi
+	h=$(sha256sum "$src" | cut -c1-12)
+	name="$h-$main"
+	if [[ ! -f $sdir/$name ]]; then
+		need=$(stat -c%s "$src")
+		avail=$(df --output=avail -B1 "$dest" | tail -n1 | tr -d ' ')
+		[[ $avail =~ ^[0-9]+$ ]] || return 1
+		((avail - need > limine_esp_reserve_mb * 1024 * 1024)) || return 1
+		mkdir -p "$sdir"
+		if ! { cp "$src" "$sdir/$name.tmp" && mv "$sdir/$name.tmp" "$sdir/$name"; }; then
+			rm -f "$sdir/$name.tmp"
+			return 1
+		fi
+	fi
+	lim_used+=("$name")
+	lim_ref="$lim_prefix/snapshots/$name"
+}
+
+xml_tag() {
+	sed -n "s:.*<$1>\(.*\)</$1>.*:\1:p" "$2" 2>/dev/null | head -n1
+}
+
+# gera o submenu na saída padrão (mensagens vão para stderr)
+# $1 = UUID do /   $2 = cmdline   [$3 = prefixo boot()]   [$4 = pasta na ESP]
+cmd_limine_entries() {
+	local uuid=${1:-} cmdline=${2:-} n snap info boot ver kref iref count=0 f
+	local date desc stype label body=""
+	lim_prefix=${3:-$limine_prefix}
+	lim_dest=${4:-$limine_dest}
+	lim_used=()
+
+	[[ -n $uuid ]] || die "uso: $app limine-entries UUID \"CMDLINE\" [PREFIXO] [PASTA_ESP]"
+	[[ -d $snapshots_dir ]] || return 0
+
+	while read -r n; do
+		((count >= limine_max_snapshots)) && break
+		snap="$snapshots_dir/$n/snapshot"
+		info="$snapshots_dir/$n/info.xml"
+		boot="$snap/boot"
+		[[ -r $info && -d $boot ]] || continue
+
+		ver=$(newest_kernel_in "$boot")
+		[[ -n $ver && -f $boot/initramfs-$ver.img ]] || continue
+
+		if ! lim_file "$boot/vmlinuz-$ver" "vmlinuz-$ver"; then
+			warn "snapshot $n: sem espaço na ESP para o kernel $ver, fora do menu"
+			continue
+		fi
+		kref=$lim_ref
+		if ! lim_file "$boot/initramfs-$ver.img" "initramfs-$ver.img" &&
+			! lim_file "$boot/initramfs-$ver.img" "initramfs-$ver.img" reuse; then
+			warn "snapshot $n: sem espaço na ESP para o initramfs $ver, fora do menu"
+			continue
+		fi
+		iref=$lim_ref
+
+		date=$(xml_tag date "$info")
+		desc=$(xml_tag description "$info")
+		stype=$(xml_tag type "$info")
+		label="#$n  ${date%:*}  ${desc:-$stype}"
+
+		body+="//$label"$'\n'
+		body+="    PROTOCOL: linux"$'\n'
+		body+="    PATH: boot():$kref"$'\n'
+		body+="    MODULE_PATH: boot():$iref"$'\n'
+		body+="    CMDLINE: root=UUID=$uuid $cmdline rootflags=subvol=$snap_subvol/$n/snapshot"$'\n'
+		body+="    COMMENT: snapshot $n ($stype), kernel $ver"$'\n'
+		body+=$'\n'
+		((count++))
+	done < <(find "$snapshots_dir" -mindepth 1 -maxdepth 1 -regex '.*/[0-9]+' -printf '%f\n' | sort -rn)
+
+	# apaga da ESP as cópias de snapshots que não existem mais
+	for f in "$lim_dest"/snapshots/*; do
+		[[ -f $f ]] || continue
+		[[ " ${lim_used[*]} " == *" ${f##*/} "* ]] || rm -f "$f"
+	done
+
+	((count > 0)) || return 0
+	printf '/Snapshots do sistema\n'
+	printf '%s' "$body"
 }
 
 #-------------------------------------------------------------------------
@@ -255,6 +405,7 @@ cmd_create() {
 	in_snapshot && die "o sistema foi iniciado num snapshot; não dá para criar snapshots aqui"
 	num=$(snap create -t single -p -c number -d "$desc") || die "falha ao criar o snapshot"
 	ok "snapshot $num criado"
+	limine_refresh
 	echo "$num"
 }
 
@@ -270,11 +421,12 @@ cmd_delete() {
 	done
 	snap delete "$@" || die "falha ao apagar"
 	ok "apagado(s): $*"
+	limine_refresh
 }
 
 # estado do sistema, uma chave=valor por linha (usado pela GUI)
 cmd_status() {
-	local fsroot layout cfg=no wheel=no gb=missing hooks=no migrate=no used size
+	local fsroot layout cfg=no wheel=no gb=missing hooks=no migrate=no used size bl=""
 
 	if is_btrfs; then
 		fsroot=$(root_fsroot)
@@ -302,6 +454,9 @@ cmd_status() {
 
 	[[ -f /$migrate_mark ]] && migrate=pending
 
+	has_grub && bl=grub
+	has_limine && bl=${bl:+$bl+}limine
+
 	read -r used size < <(df -h --output=used,size / | tail -n1)
 
 	cat <<-EOF
@@ -313,6 +468,7 @@ cmd_status() {
 		grub_btrfs=$gb
 		hooks=$hooks
 		migrate=$migrate
+		bootloader=${bl:-unknown}
 		disk_used=$used
 		disk_size=$size
 	EOF
@@ -368,8 +524,10 @@ cmd_setup() {
 		warn "não consegui liberar o grupo wheel na config"
 	ok "grupo wheel liberado para consultar os snapshots"
 
-	# 3. serviço do grub-btrfs (atualiza o menu a cada snapshot)
-	if [[ -d /etc/sv/grub-btrfs ]]; then
+	# 3. serviço do grub-btrfs (atualiza o menu a cada snapshot), só com GRUB
+	if ! has_grub; then
+		:
+	elif [[ -d /etc/sv/grub-btrfs ]]; then
 		if [[ -e /var/service/grub-btrfs ]]; then
 			ok "serviço grub-btrfs já ativo"
 		else
@@ -379,7 +537,17 @@ cmd_setup() {
 		warn "serviço grub-btrfs não encontrado em /etc/sv (pacote grub-btrfs instalado?)"
 	fi
 
-	# 4. menu do GRUB
+	# 4. menu do Limine
+	if has_limine; then
+		if limine_patched; then
+			msg "atualizando o menu do Limine"
+			limine_refresh && ok "menu do Limine atualizado"
+		else
+			warn "o update-limine instalado não tem suporte a snapshots; atualize-o"
+		fi
+	fi
+
+	# 5. menu do GRUB
 	if command -v grub-mkconfig >/dev/null && [[ -f /boot/grub/grub.cfg ]]; then
 		msg "atualizando o menu do GRUB"
 		if grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then
@@ -448,6 +616,14 @@ cmd_restore() {
 	[[ -d $src ]] || die "snapshot $n não existe"
 	btrfs subvolume show "$src" >/dev/null 2>&1 || die "$src não é um subvolume"
 
+	# Limine: o kernel da ESP precisa bater com os módulos do @ restaurado.
+	# O update-limine copia os kernels do /boot em uso, então ou o sistema
+	# está rodando no próprio snapshot, ou os kernels precisam ser os mesmos.
+	if has_limine && [[ $cur != "$n" ]] &&
+		[[ $(newest_kernel_in "$src/boot") != "$(newest_kernel_in /boot)" ]]; then
+		die "o snapshot $n tem outro kernel ($(newest_kernel_in "$src/boot")). Com o Limine, inicie primeiro no snapshot $n pelo menu de boot e restaure de lá."
+	fi
+
 	backup=$(next_snap_num)
 	backup_dir="$top/$snap_subvol/$backup"
 
@@ -485,6 +661,12 @@ cmd_restore() {
 	btrfs subvolume set-default 5 "$top"
 
 	umount_top
+
+	# Limine: recopia para a ESP os kernels do @ restaurado
+	if has_limine; then
+		msg "atualizando os kernels e o menu do Limine"
+		limine_refresh
+	fi
 
 	echo
 	ok "sistema restaurado para o snapshot $n"
@@ -621,12 +803,14 @@ $subs"
 	grep -Eq '^[^#]*[[:space:]]/\.snapshots[[:space:]]' /etc/fstab &&
 		die "o fstab já tem uma linha para /.snapshots"
 
-	command -v grub-install >/dev/null && command -v grub-mkconfig >/dev/null && [[ -f /boot/grub/grub.cfg ]] ||
-		die "GRUB não encontrado. Por enquanto o migrate só suporta GRUB."
+	if has_limine && ! limine_patched; then
+		die "o update-limine instalado não tem suporte a subvolumes (rootflags); atualize-o antes de migrar"
+	fi
+	has_grub || has_limine || die "nenhum bootloader suportado encontrado (GRUB ou Limine)"
 }
 
 cmd_migrate() {
-	local with_home=yes mode="" esp disk ids=() id new mnt m cfg
+	local with_home=yes mode="" esp disk ids=() id new mnt m cfg lcfg
 	check_root migrate
 
 	[[ ${1:-} == finish ]] && { cmd_migrate_finish; return; }
@@ -642,7 +826,9 @@ cmd_migrate() {
 
 	# como o GRUB está instalado
 	esp=$(esp_dir)
-	if [[ -d /sys/firmware/efi ]]; then
+	if ! has_grub; then
+		mode="none"
+	elif [[ -d /sys/firmware/efi ]]; then
 		[[ -n $esp ]] || die "sistema UEFI, mas a ESP não está montada"
 		command -v efibootmgr >/dev/null || die "efibootmgr não instalado"
 		while IFS= read -r id; do
@@ -661,7 +847,9 @@ cmd_migrate() {
 	msg "sistema: $(root_dev), / direto na raiz do btrfs"
 	msg "vai criar: $root_subvol, $snap_subvol$([[ $with_home == yes ]] && echo ", $home_subvol")"
 	[[ $with_home == no ]] && msg "/home está em outra partição e fica como está"
+	has_limine && msg "Limine em $limine_dest (rootflags=subvol=$root_subvol no limine.conf)"
 	case $mode in
+		none) ;;
 		bios) msg "GRUB BIOS em $disk" ;;
 		*)    msg "GRUB UEFI em $esp$( ((${#ids[@]})) && echo " (id: ${ids[*]})")$([[ $mode == *removable* ]] && echo " + fallback EFI/BOOT")" ;;
 	esac
@@ -691,39 +879,58 @@ cmd_migrate() {
 	migrate_fstab "$new/etc/fstab" "$with_home" || die "falha ao ajustar o $new/etc/fstab"
 	ok "fstab ajustado (original em /etc/fstab.pre-migrate)"
 
-	# 4. GRUB dentro do novo @
-	mnt=$(mktemp -d "/tmp/$app-migrate.XXXXXX")
-	mount -o "subvol=$root_subvol" "$(root_dev)" "$mnt" || die "falha ao montar o $root_subvol"
-	for m in /boot /boot/efi /efi; do
-		mountpoint -q "$m" && mount --bind "$m" "$mnt$m"
-	done
-	for m in dev proc sys run; do
-		mount --rbind "/$m" "$mnt/$m" && mount --make-rslave "$mnt/$m"
-	done
-
-	msg "instalando o GRUB no novo $root_subvol"
-	if [[ $mode == bios ]]; then
-		chroot "$mnt" grub-install --target=i386-pc "$disk" || { umount -R "$mnt"; die "falha no grub-install"; }
-	else
-		for id in "${ids[@]}"; do
-			chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
-				--bootloader-id="$id" || { umount -R "$mnt"; die "falha no grub-install ($id)"; }
-		done
-		if [[ $mode == *removable* ]]; then
-			chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
-				--removable || { umount -R "$mnt"; die "falha no grub-install --removable"; }
+	# 4. Limine: o limine.conf atual passa a montar o @
+	#    (os kernels na ESP são os mesmos; o update-limine novo mantém o
+	#    rootflags nas próximas atualizações de kernel)
+	if has_limine; then
+		lcfg="$limine_dest/limine.conf"
+		cp -a "$lcfg" "$lcfg.pre-migrate"
+		sed -i -E "/^[[:space:]]*CMDLINE:/I{/rootflags=/!s/[[:space:]]+single[[:space:]]*\$/ rootflags=subvol=$root_subvol single/;/rootflags=/!s/[[:space:]]*\$/ rootflags=subvol=$root_subvol/}" "$lcfg"
+		if grep -Eiq '^[[:space:]]*CMDLINE:' "$lcfg" &&
+			! grep -Ei '^[[:space:]]*CMDLINE:' "$lcfg" | grep -vq "rootflags=subvol=$root_subvol"; then
+			ok "Limine ajustado (original em $lcfg.pre-migrate)"
+		else
+			cp -a "$lcfg.pre-migrate" "$lcfg"
+			die "falha ao ajustar o $lcfg. Nada no boot foi alterado; o $root_subvol criado pode ser apagado."
 		fi
 	fi
 
-	chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 ||
-		{ umount -R "$mnt"; die "falha no grub-mkconfig"; }
+	# 5. GRUB dentro do novo @
+	mnt=$(mktemp -d "/tmp/$app-migrate.XXXXXX")
+	mount -o "subvol=$root_subvol" "$(root_dev)" "$mnt" || die "falha ao montar o $root_subvol"
 
-	cfg="$mnt/boot/grub/grub.cfg"
-	if ! grep -q "rootflags=subvol=$root_subvol" "$cfg"; then
-		umount -R "$mnt"
-		die "o grub.cfg novo não tem rootflags=subvol=$root_subvol. NÃO reinicie: restaure o backup."
+	if [[ $mode != none ]]; then
+		for m in /boot /boot/efi /efi; do
+			mountpoint -q "$m" && mount --bind "$m" "$mnt$m"
+		done
+		for m in dev proc sys run; do
+			mount --rbind "/$m" "$mnt/$m" && mount --make-rslave "$mnt/$m"
+		done
+
+		msg "instalando o GRUB no novo $root_subvol"
+		if [[ $mode == bios ]]; then
+			chroot "$mnt" grub-install --target=i386-pc "$disk" || { umount -R "$mnt"; die "falha no grub-install"; }
+		else
+			for id in "${ids[@]}"; do
+				chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
+					--bootloader-id="$id" || { umount -R "$mnt"; die "falha no grub-install ($id)"; }
+			done
+			if [[ $mode == *removable* ]]; then
+				chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
+					--removable || { umount -R "$mnt"; die "falha no grub-install --removable"; }
+			fi
+		fi
+
+		chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 ||
+			{ umount -R "$mnt"; die "falha no grub-mkconfig"; }
+
+		cfg="$mnt/boot/grub/grub.cfg"
+		if ! grep -q "rootflags=subvol=$root_subvol" "$cfg"; then
+			umount -R "$mnt"
+			die "o grub.cfg novo não tem rootflags=subvol=$root_subvol. NÃO reinicie: restaure o backup."
+		fi
+		ok "GRUB instalado, com rootflags=subvol=$root_subvol"
 	fi
-	ok "GRUB instalado, com rootflags=subvol=$root_subvol"
 
 	mkdir -p "$mnt/${migrate_mark%/*}"
 	date '+%F %T' >"$mnt/$migrate_mark"
@@ -796,6 +1003,8 @@ Uso: $app <comando>
   setup              cria a config do snapper e libera o grupo wheel
   migrate            converte o / da raiz do btrfs para o layout @/@home/@snapshots
   migrate finish     depois do reboot: apaga o sistema antigo da raiz do btrfs
+  limine-entries UUID "CMDLINE"
+                     submenu de snapshots do Limine (usado pelo update-limine)
 
 Chamados pelos hooks do voidbr-xbps:
   pre                snapshot antes da transação
@@ -838,5 +1047,6 @@ case ${1:-} in
 	status)  cmd_status ;;
 	setup)   cmd_setup ;;
 	migrate) cmd_migrate "${2:-}" ;;
+	limine-entries) shift; cmd_limine_entries "$@" ;;
 	*)       usage ;;
 esac
