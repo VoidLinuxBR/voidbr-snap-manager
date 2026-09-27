@@ -12,6 +12,8 @@
 #   All rights reserved.
 #
 #   ChangeLog:
+#   - v0.6.0 (2026-09-27): Menu "⏰ Agendamento" (snapshots periódicos pelo
+#     timeline do snapper) e estado do cronie no rodapé.
 #   - v0.5.0 (2026-09-26): Suporte ao Limine no rodapé (bootloader detectado);
 #     o aviso de configuração só exige grub-btrfs quando o GRUB está em uso.
 #   - v0.4.0 (2026-09-26): Versão inicial — GTK4 + PyGObject, no mesmo visual do
@@ -65,10 +67,27 @@ from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 APP_ID = "br.voidbr.snappermanager"
 APP_NAME = "voidbr-snapper-manager"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 CLI = "/usr/bin/voidbr-snapper-manager"
 
 TIPOS = {"single": "📌 manual", "pre": "⏪ antes", "post": "⏩ depois"}
+
+# (rótulo, período do CLI)
+PERIODOS = [("Desligado", "off"), ("Diário", "daily"), ("Semanal", "weekly"),
+            ("Mensal", "monthly"), ("A cada hora", "hourly")]
+NOMES_PERIODO = {"hourly": "por hora", "daily": "diário", "weekly": "semanal",
+                 "monthly": "mensal", "yearly": "anual"}
+
+
+def resumo_agendamento(valor):
+    """'daily:7,weekly:4' -> 'diário (7), semanal (4)'; 'off' -> 'desligado'."""
+    if not valor or valor == "off":
+        return "desligado"
+    partes = []
+    for item in valor.split(","):
+        per, _, n = item.partition(":")
+        partes.append(f"{NOMES_PERIODO.get(per, per)} ({n})")
+    return ", ".join(partes)
 
 CSS = """
 window {
@@ -197,6 +216,19 @@ entry {
     color: #f1f1f1;
     border-radius: 8px;
 }
+
+dropdown > button,
+spinbutton,
+spinbutton > text,
+spinbutton > button {
+    background: #2a2b3a;
+    color: #f1f1f1;
+}
+
+popover > contents {
+    background-color: #2a2b3a;
+    color: #f1f1f1;
+}
 """
 
 
@@ -311,6 +343,7 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
         self.set_titlebar(cabecalho)
 
         menu = Gio.Menu()
+        menu.append("⏰ Agendamento", "win.agendamento")
         menu.append("⚙️ Configurar sistema", "win.configurar")
         menu.append("🔄 Atualizar lista", "win.atualizar")
         menu.append("ℹ️ Sobre / Créditos", "win.sobre")
@@ -321,7 +354,8 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
         self.spinner = Gtk.Spinner()
         cabecalho.pack_end(self.spinner)
 
-        for nome, cb in (("configurar", self.ao_clicar_configurar),
+        for nome, cb in (("agendamento", self.ao_clicar_agendamento),
+                         ("configurar", self.ao_clicar_configurar),
                          ("atualizar", lambda *_: self.atualizar()),
                          ("sobre", self.ao_clicar_sobre)):
             acao = Gio.SimpleAction.new(nome, None)
@@ -509,6 +543,7 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
                      "na raiz do btrfs (migrate finish).")
             botao = ("🧹 Concluir migração", "botao-laranja", self.ao_clicar_migrar_finish)
         elif layout == "flat" and (st.get("config") != "yes" or st.get("wheel") != "yes"
+                                   or st.get("cron") != "active"
                                    or ("grub" in st.get("bootloader", "")
                                        and st.get("grub_btrfs") != "active")):
             texto = "⚙️ O sistema ainda não está configurado para os snapshots."
@@ -548,7 +583,10 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
             partes.append("✅ limine")
         if bl == "unknown":
             partes.append("❓ bootloader")
+        cron_ok = st.get("cron") == "active"
         partes += [
+            f"{'⏰' if cron_ok else '❌'} {resumo_agendamento(st.get('schedule'))}"
+            + ("" if cron_ok else " (cronie inativo)"),
             f"💾 {st.get('disk_used', '?')} de {st.get('disk_size', '?')}",
         ]
         self.label_status.set_text("   •   ".join(partes))
@@ -720,6 +758,74 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
                        "🧹 Abrir terminal",
                        lambda: self.abrir_no_terminal(
                            f"sudo {CLI} migrate finish && sudo {CLI} setup"))
+
+    def ao_clicar_agendamento(self, *_):
+        if self.status.get("config") != "yes":
+            self.erro("Sistema não configurado",
+                      "Configure primeiro pelo menu ☰ → Configurar sistema.")
+            return
+
+        # valores atuais: primeiro período ativo
+        atual = self.status.get("schedule", "off")
+        per_atual, qtd_atual = "off", 7
+        if atual and atual != "off":
+            per, _, n = atual.split(",")[0].partition(":")
+            per_atual, qtd_atual = per, int(n) if n.isdigit() else 7
+
+        dlg = Gtk.Window(title="Agendamento", transient_for=self, modal=True,
+                         default_width=460)
+        caixa = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                        margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+        titulo = Gtk.Label(label="⏰ Snapshots periódicos", xalign=0)
+        titulo.add_css_class("titulo-app")
+        caixa.append(titulo)
+        info = Gtk.Label(xalign=0, wrap=True, label=(
+            "Além dos snapshots de cada atualização, o sistema pode guardar "
+            "snapshots periódicos. Os mais antigos que o limite são apagados "
+            "automaticamente."))
+        caixa.append(info)
+
+        grade = Gtk.Grid(column_spacing=12, row_spacing=10)
+        grade.attach(Gtk.Label(label="📅 Frequência:", xalign=0), 0, 0, 1, 1)
+        lista = Gtk.DropDown.new_from_strings([r for r, _ in PERIODOS])
+        codigos = [c for _, c in PERIODOS]
+        lista.set_selected(codigos.index(per_atual) if per_atual in codigos else 0)
+        lista.set_hexpand(True)
+        grade.attach(lista, 1, 0, 1, 1)
+        grade.attach(Gtk.Label(label="🗂️ Quantos guardar:", xalign=0), 0, 1, 1, 1)
+        qtd = Gtk.SpinButton.new_with_range(1, 99, 1)
+        qtd.set_value(qtd_atual)
+        grade.attach(qtd, 1, 1, 1, 1)
+        caixa.append(grade)
+
+        def ao_mudar(*_):
+            qtd.set_sensitive(codigos[lista.get_selected()] != "off")
+        lista.connect("notify::selected", ao_mudar)
+        ao_mudar()
+
+        if self.status.get("cron") != "active":
+            aviso = Gtk.Label(xalign=0, wrap=True, label=(
+                "⚠️ O cronie não está ativo: sem ele não há snapshots periódicos "
+                "nem limpeza automática. Use ☰ → Configurar sistema."))
+            aviso.add_css_class("subtitulo")
+            caixa.append(aviso)
+
+        linha = Gtk.Box(spacing=8, homogeneous=True)
+        linha.append(self._botao("❌ Cancelar", "botao-cinza", lambda *_: dlg.close()))
+        salvar = Gtk.Button(label="💾 Salvar")
+        salvar.add_css_class("botao-verde")
+        linha.append(salvar)
+        caixa.append(linha)
+        dlg.set_child(caixa)
+
+        def ao_salvar(*_):
+            per = codigos[lista.get_selected()]
+            args = ["schedule", "off"] if per == "off" else \
+                ["schedule", per, str(qtd.get_value_as_int())]
+            dlg.close()
+            self.executar_root(args, lambda out: None, "Falha ao salvar o agendamento")
+        salvar.connect("clicked", ao_salvar)
+        dlg.present()
 
     def ao_clicar_configurar(self, *_):
         self.executar_root(["setup"],

@@ -21,6 +21,8 @@
 #   setup              cria a config do snapper no layout certo e libera o wheel
 #   migrate [finish]   converte o / da raiz do btrfs para o layout @/@home/@snapshots
 #   limine-entries     gera o submenu de snapshots do Limine (chamado pelo update-limine)
+#   limine-refresh     refaz o menu do Limine (usado pelo cron diário)
+#   schedule [...]     snapshots periódicos (timeline do snapper, via cronie)
 #
 
 set -uo pipefail
@@ -43,6 +45,7 @@ limine_dest="/boot/efi/limine"
 limine_prefix="/limine"
 limine_max_snapshots=10
 limine_esp_reserve_mb=8
+schedule_default="daily 7"
 
 # shellcheck source=/dev/null
 [[ -r $conf_file ]] && . "$conf_file"
@@ -426,7 +429,7 @@ cmd_delete() {
 
 # estado do sistema, uma chave=valor por linha (usado pela GUI)
 cmd_status() {
-	local fsroot layout cfg=no wheel=no gb=missing hooks=no migrate=no used size bl=""
+	local fsroot layout cfg=no wheel=no gb=missing hooks=no migrate=no used size bl="" sched=off
 
 	if is_btrfs; then
 		fsroot=$(root_fsroot)
@@ -443,6 +446,7 @@ cmd_status() {
 
 	if has_config; then
 		cfg=yes
+		sched=$(schedule_summary)
 		grep -Eq '^ALLOW_GROUPS=".*\bwheel\b.*"' "/etc/snapper/configs/$snapper_config" && wheel=yes
 	fi
 
@@ -469,9 +473,98 @@ cmd_status() {
 		hooks=$hooks
 		migrate=$migrate
 		bootloader=${bl:-unknown}
+		cron=$(cron_state)
+		schedule=$sched
 		disk_used=$used
 		disk_size=$size
 	EOF
+}
+
+#-------------------------------------------------------------------------
+# schedule
+#
+# Snapshots periódicos = "timeline" do snapper. Quem executa é o
+# /etc/cron.hourly/snapper (do pacote snapper), rodado pelo cronie: ele cria
+# um snapshot por hora e, na limpeza, guarda só a quantidade definida por
+# período (TIMELINE_LIMIT_*). O mesmo cron faz a limpeza "number" dos
+# snapshots pre/post; sem o cronie, nada é apagado.
+#-------------------------------------------------------------------------
+
+readonly schedule_mark="var/lib/$app/schedule-set"
+
+cfg_get() {
+	sed -n "s/^$1=\"\\(.*\\)\"/\\1/p" "/etc/snapper/configs/$snapper_config" 2>/dev/null
+}
+
+# resumo do agendamento: off | hourly:N,daily:N,...
+schedule_summary() {
+	local p v out=""
+	[[ $(cfg_get TIMELINE_CREATE) == yes ]] || { echo off; return; }
+	for p in hourly daily weekly monthly yearly; do
+		v=$(cfg_get "TIMELINE_LIMIT_${p^^}")
+		[[ $v =~ ^[0-9]+$ ]] && ((v > 0)) && out+="${out:+,}$p:$v"
+	done
+	echo "${out:-off}"
+}
+
+cron_state() {
+	if [[ -e /var/service/cronie ]]; then
+		echo active
+	elif [[ -d /etc/sv/cronie ]]; then
+		echo inactive
+	else
+		echo missing
+	fi
+}
+
+# schedule off | schedule daily 7 [weekly 4 ...]
+schedule_apply() {
+	local -a sets=("NUMBER_CLEANUP=yes" "TIMELINE_CLEANUP=yes" "EMPTY_PRE_POST_CLEANUP=yes")
+	local p n
+	declare -A lim=([hourly]=0 [daily]=0 [weekly]=0 [monthly]=0 [yearly]=0)
+
+	if [[ ${1:-} == off ]]; then
+		sets+=("TIMELINE_CREATE=no")
+	else
+		(($# > 0 && $# % 2 == 0)) || die "uso: $app schedule off | hourly|daily|weekly|monthly|yearly N [...]"
+		while (($#)); do
+			p=$1 n=$2
+			shift 2
+			[[ -v "lim[$p]" ]] || die "período inválido: $p (use hourly, daily, weekly, monthly ou yearly)"
+			[[ $n =~ ^[0-9]+$ ]] || die "quantidade inválida: $n"
+			lim[$p]=$n
+		done
+		sets+=("TIMELINE_CREATE=yes")
+		for p in hourly daily weekly monthly yearly; do
+			sets+=("TIMELINE_LIMIT_${p^^}=${lim[$p]}")
+		done
+	fi
+	snap set-config "${sets[@]}" || die "falha ao alterar a config do snapper"
+}
+
+cmd_schedule() {
+	local sum
+	if [[ -z ${1:-} || ${1:-} == show ]]; then
+		has_config || die "snapper não configurado. Rode: sudo $app setup"
+		sum=$(schedule_summary)
+		msg "agendamento: ${sum//,/, }"
+		msg "cronie: $(cron_state)"
+		[[ $(cron_state) == active ]] ||
+			warn "sem o cronie ativo, não há snapshots periódicos nem limpeza automática"
+		return 0
+	fi
+	check_root schedule
+	has_config || die "snapper não configurado. Rode: sudo $app setup"
+	schedule_apply "$@"
+	mkdir -p "/${schedule_mark%/*}" && : >"/$schedule_mark"
+	ok "agendamento: $(schedule_summary | sed 's/,/, /g')"
+	[[ $(cron_state) == active ]] ||
+		warn "o cronie não está ativo; rode: sudo $app setup"
+}
+
+cmd_limine_refresh() {
+	check_root limine-refresh
+	limine_refresh
 }
 
 #-------------------------------------------------------------------------
@@ -523,6 +616,25 @@ cmd_setup() {
 	snap set-config "ALLOW_GROUPS=wheel" "SYNC_ACL=yes" ||
 		warn "não consegui liberar o grupo wheel na config"
 	ok "grupo wheel liberado para consultar os snapshots"
+
+	# 2b. cronie: executa o /etc/cron.hourly/snapper (timeline + limpeza)
+	case $(cron_state) in
+		active)   ok "serviço cronie já ativo" ;;
+		inactive) ln -s /etc/sv/cronie /var/service/ && ok "serviço cronie ativado" ;;
+		missing)  warn "cronie não instalado: sem snapshots periódicos nem limpeza automática" ;;
+	esac
+
+	# 2c. agendamento padrão, só na primeira vez (não sobrescreve o do usuário)
+	if [[ ! -f /$schedule_mark ]]; then
+		# shellcheck disable=SC2086
+		schedule_apply $schedule_default
+		mkdir -p "/${schedule_mark%/*}" && : >"/$schedule_mark"
+		ok "agendamento padrão: $(schedule_summary | sed 's/,/, /g')"
+	else
+		snap set-config "NUMBER_CLEANUP=yes" "TIMELINE_CLEANUP=yes" "EMPTY_PRE_POST_CLEANUP=yes" ||
+			warn "não consegui ativar a limpeza automática"
+		ok "agendamento: $(schedule_summary | sed 's/,/, /g')"
+	fi
 
 	# 3. serviço do grub-btrfs (atualiza o menu a cada snapshot), só com GRUB
 	if ! has_grub; then
@@ -1001,6 +1113,10 @@ Uso: $app <comando>
   delete N [N...]    apaga snapshots
   status             estado do sistema (chave=valor)
   setup              cria a config do snapper e libera o grupo wheel
+  schedule [show]    mostra o agendamento dos snapshots periódicos
+  schedule off       desliga os snapshots periódicos (a limpeza continua)
+  schedule daily 7 [weekly 4 ...]
+                     guarda N snapshots por período (hourly, daily, weekly, monthly, yearly)
   migrate            converte o / da raiz do btrfs para o layout @/@home/@snapshots
   migrate finish     depois do reboot: apaga o sistema antigo da raiz do btrfs
   limine-entries UUID "CMDLINE"
@@ -1048,5 +1164,7 @@ case ${1:-} in
 	setup)   cmd_setup ;;
 	migrate) cmd_migrate "${2:-}" ;;
 	limine-entries) shift; cmd_limine_entries "$@" ;;
+	limine-refresh) cmd_limine_refresh ;;
+	schedule) shift; cmd_schedule "$@" ;;
 	*)       usage ;;
 esac

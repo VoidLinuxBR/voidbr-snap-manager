@@ -36,6 +36,7 @@ O openSUSE resolve isso com um layout e um GRUB próprios. As outras distros com
 | snapper | com a config `root` para o `/` |
 | voidbr-xbps | xbps com suporte a hooks (`/etc/xbps.d/hooks.d/*.hook`) |
 | Bootloader | GRUB com **grub-btrfs**, para bootar em snapshots pelo menu |
+| Agendador | **cronie**, que roda o `/etc/cron.hourly/snapper` (snapshots periódicos **e a limpeza automática**) |
 | Notificação (opcional) | `libnotify` (`notify-send`) |
 
 Sem `voidbr-xbps` os hooks não rodam, mas `list`, `diff` e `restore` continuam funcionando.
@@ -192,6 +193,23 @@ Cada snapshot usa o kernel que estava instalado nele. Se for a mesma versão que
 
 No `restore` com Limine, os kernels da ESP são recopiados a partir do `@` restaurado. Se o snapshot tiver outro kernel, o restore exige que o sistema tenha sido iniciado nele pelo menu de boot.
 
+### Agendamento (snapshots periódicos)
+
+Além dos snapshots de cada atualização, o snapper pode guardar snapshots periódicos (o "timeline"). Quem executa é o `/etc/cron.hourly/snapper`, rodado pelo **cronie**. O mesmo cron faz a **limpeza automática** de todos os snapshots (`NUMBER_LIMIT`, limites do timeline e pares pre/post vazios): **sem o cronie ativo, nenhum snapshot é apagado**.
+
+O `setup` ativa o cronie e, na primeira vez, aplica o padrão do VoidBR: **1 snapshot por dia, guardando 7**. Para mudar:
+
+```sh
+voidbr-snapper-manager schedule                 # mostra o agendamento atual
+sudo voidbr-snapper-manager schedule daily 7    # 7 diários
+sudo voidbr-snapper-manager schedule daily 7 weekly 4
+sudo voidbr-snapper-manager schedule off        # só os snapshots das atualizações
+```
+
+Períodos: `hourly`, `daily`, `weekly`, `monthly`, `yearly`. Com `off`, a limpeza automática continua funcionando. Na interface gráfica: menu ☰ → **⏰ Agendamento**.
+
+Com o Limine, o menu de snapshots é refeito uma vez por dia pelo `/etc/cron.daily/voidbr-snapper-manager`, e não a cada snapshot do timeline, para não reescrever a ESP de hora em hora.
+
 ### Pular o snapshot numa transação
 
 ```sh
@@ -237,6 +255,7 @@ Os limites de quantos snapshots manter ficam no próprio snapper, em `/etc/snapp
 | `/etc/xbps.d/hooks.d/99-voidbr-snapper-post.hook` | hook do snapshot post |
 | `/etc/xdg/autostart/voidbr-snapper-manager.desktop` | notificação ao logar |
 | `/etc/bash/bashrc.d/voidbr-snapper-manager.sh` | aviso ao abrir o terminal |
+| `/etc/cron.daily/voidbr-snapper-manager` | atualiza o menu do Limine uma vez por dia |
 | `/run/voidbr-snapper-manager/pre` | número do pre da transação em andamento |
 
 ---

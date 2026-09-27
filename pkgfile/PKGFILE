@@ -19,6 +19,7 @@ depends=(
 	'snapper'
 	'btrfs-progs'
 	'grub-btrfs'
+	'cronie'
 	'util-linux'
 	'coreutils'
 	'voidbr-xbps'
@@ -66,14 +67,18 @@ pre_install() {
 	log "Iniciando instalação"
 }
 
+
 post_install() {
 	log "Finalizando instalação"
 	echo "==> voidbr-snapper-manager instalado."
 	echo "    O xbps agora cria um snapshot pre/post a cada transação,"
 	echo "    se o / for btrfs e existir a config 'root' do snapper."
 	echo "    Para configurar: sudo voidbr-snapper-manager setup"
+	echo "    (ativa o cronie, que faz a limpeza e os snapshots diários)"
+	echo "    Interface gráfica: voidbr-snapper-manager-gui"
 	echo "    No Hyprland, adicione ao hyprland.conf:"
 	echo "      exec-once = voidbr-snapper-manager check --notify"
+	echo "    e tenha um agente polkit rodando (ex: hyprpolkitagent)."
 }
 
 pre_upgrade() {

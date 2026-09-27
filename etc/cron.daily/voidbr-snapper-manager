@@ -1,0 +1,6 @@
+#!/bin/sh
+# voidbr-snapper-manager: atualiza o menu de snapshots do Limine uma vez por
+# dia (os snapshots do timeline e a limpeza do snapper mudam a lista).
+# Com GRUB isso não é necessário: o grub-btrfs acompanha em tempo real.
+[ -x /usr/bin/voidbr-snapper-manager ] || exit 0
+exec /usr/bin/voidbr-snapper-manager limine-refresh >/dev/null 2>&1
