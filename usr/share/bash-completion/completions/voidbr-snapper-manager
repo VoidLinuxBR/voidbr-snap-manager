@@ -1,0 +1,80 @@
+# bash completion para o voidbr-snapper-manager
+# instalado em /usr/share/bash-completion/completions/voidbr-snapper-manager
+
+# números dos snapshots (sem o 0); $1 = "pre" para listar só os pre
+_voidbr_snapper_manager_snaps() {
+	voidbr-snapper-manager list --csv 2>/dev/null |
+		awk -F, -v t="${1:-}" '$1 ~ /^[0-9]+$/ && $1 != 0 && (t == "" || $2 == t) { print $1 }'
+}
+
+_voidbr_snapper_manager() {
+	local cur prev cmd i
+	local commands="list diff status check create delete restore setup schedule migrate"
+	local periods="hourly daily weekly monthly yearly"
+
+	COMPREPLY=()
+	cur=${COMP_WORDS[COMP_CWORD]}
+	prev=${COMP_WORDS[COMP_CWORD - 1]}
+
+	# primeiro argumento que não é opção = subcomando
+	cmd=""
+	for ((i = 1; i < COMP_CWORD; i++)); do
+		case ${COMP_WORDS[i]} in
+			--*) ;;
+			*) cmd=${COMP_WORDS[i]}; break ;;
+		esac
+	done
+
+	if [[ -z $cmd ]]; then
+		if [[ $cur == -* ]]; then
+			mapfile -t COMPREPLY < <(compgen -W "--yes --csv" -- "$cur")
+		else
+			mapfile -t COMPREPLY < <(compgen -W "$commands" -- "$cur")
+		fi
+		return 0
+	fi
+
+	case $cmd in
+		list)
+			mapfile -t COMPREPLY < <(compgen -W "--csv" -- "$cur")
+			;;
+		check)
+			mapfile -t COMPREPLY < <(compgen -W "--notify" -- "$cur")
+			;;
+		diff)
+			[[ $prev == diff ]] &&
+				mapfile -t COMPREPLY < <(compgen -W "$(_voidbr_snapper_manager_snaps pre)" -- "$cur")
+			;;
+		restore)
+			if [[ $cur == -* ]]; then
+				mapfile -t COMPREPLY < <(compgen -W "--yes" -- "$cur")
+			elif [[ $prev == restore ]]; then
+				mapfile -t COMPREPLY < <(compgen -W "$(_voidbr_snapper_manager_snaps)" -- "$cur")
+			fi
+			;;
+		delete)
+			# não repete números já digitados
+			local n usados=" ${COMP_WORDS[*]:1:COMP_CWORD-1} " livres=""
+			for n in $(_voidbr_snapper_manager_snaps); do
+				[[ $usados == *" $n "* ]] || livres+="$n "
+			done
+			mapfile -t COMPREPLY < <(compgen -W "$livres" -- "$cur")
+			;;
+		schedule)
+			if [[ $prev == schedule ]]; then
+				mapfile -t COMPREPLY < <(compgen -W "show off $periods" -- "$cur")
+			elif [[ " $periods " == *" $prev "* ]]; then
+				mapfile -t COMPREPLY < <(compgen -W "1 3 4 5 7 10 12 14 30" -- "$cur")
+			elif [[ $prev =~ ^[0-9]+$ ]]; then
+				mapfile -t COMPREPLY < <(compgen -W "$periods" -- "$cur")
+			fi
+			;;
+		migrate)
+			[[ $prev == migrate ]] &&
+				mapfile -t COMPREPLY < <(compgen -W "finish" -- "$cur")
+			;;
+	esac
+	return 0
+}
+
+complete -F _voidbr_snapper_manager voidbr-snapper-manager
