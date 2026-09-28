@@ -12,6 +12,8 @@
 #   All rights reserved.
 #
 #   ChangeLog:
+#   - v0.6.2 (2026-09-28): Rodapé mostra os bootloaders instalados e qual
+#     deles iniciou o sistema (🥾 boot: grub/limine).
 #   - v0.6.0 (2026-09-27): Menu "⏰ Agendamento" (snapshots periódicos pelo
 #     timeline do snapper) e estado do cronie no rodapé.
 #   - v0.5.0 (2026-09-26): Suporte ao Limine no rodapé (bootloader detectado);
@@ -67,7 +69,7 @@ from gi.repository import Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 APP_ID = "br.voidbr.snappermanager"
 APP_NAME = "voidbr-snapper-manager"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.2"
 CLI = "/usr/bin/voidbr-snapper-manager"
 
 TIPOS = {"single": "📌 manual", "pre": "⏪ antes", "post": "⏩ depois"}
@@ -544,7 +546,7 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
             botao = ("🧹 Concluir migração", "botao-laranja", self.ao_clicar_migrar_finish)
         elif layout == "flat" and (st.get("config") != "yes" or st.get("wheel") != "yes"
                                    or st.get("cron") != "active"
-                                   or ("grub" in st.get("bootloader", "")
+                                   or ("grub" in st.get("bootloaders", "")
                                        and st.get("grub_btrfs") != "active")):
             texto = "⚙️ O sistema ainda não está configurado para os snapshots."
             botao = ("⚙️ Configurar", "botao-azul", self.ao_clicar_configurar)
@@ -569,7 +571,8 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
         def ok(v):
             return "✅" if v else "❌"
 
-        bl = st.get("bootloader", "unknown")
+        bl = st.get("bootloaders", "none")
+        boot = st.get("bootloader", "unknown")
         partes = [
             f"📍 Sistema: {st.get('fsroot') or '-'}",
             f"{ok(st.get('config') == 'yes')} snapper",
@@ -581,8 +584,10 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
                                                                 "❓ grub-btrfs"))
         if "limine" in bl:
             partes.append("✅ limine")
-        if bl == "unknown":
+        if bl == "none":
             partes.append("❓ bootloader")
+        if boot in ("grub", "limine"):
+            partes.append(f"🥾 boot: {boot}")
         cron_ok = st.get("cron") == "active"
         partes += [
             f"{'⏰' if cron_ok else '❌'} {resumo_agendamento(st.get('schedule'))}"
