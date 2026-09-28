@@ -488,7 +488,8 @@ cmd_status() {
 		[[ -e /var/service/grub-btrfs ]] && gb=active || gb=inactive
 	fi
 
-	[[ -f /etc/xbps.d/hooks.d/00-$app-pre.hook && -f /etc/xbps.d/hooks.d/99-$app-post.hook ]] && hooks=yes
+	[[ -f /etc/xbps.d/hooks.d/00-voidbr-snapper-pre.hook &&
+		-f /etc/xbps.d/hooks.d/99-voidbr-snapper-post.hook ]] && hooks=yes
 
 	[[ -f /$migrate_mark ]] && migrate=pending
 
