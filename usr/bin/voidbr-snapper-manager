@@ -54,12 +54,18 @@ red='\e[1;31m'
 green='\e[1;32m'
 yellow='\e[1;33m'
 blue='\e[1;34m'
+cyan='\e[1;36m'
+bold='\e[1m'
+dim='\e[2m'
 reset='\e[0m'
 
-msg()  { printf '%b==>%b %s\n' "$blue" "$reset" "$*"; }
-ok()   { printf '%b==>%b %s\n' "$green" "$reset" "$*"; }
+msg() { printf '%b==>%b %s\n' "$blue" "$reset" "$*"; }
+ok() { printf '%b==>%b %s\n' "$green" "$reset" "$*"; }
 warn() { printf '%b==> AVISO:%b %s\n' "$yellow" "$reset" "$*" >&2; }
-die()  { printf '%b==> ERRO:%b %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+die() {
+	printf '%b==> ERRO:%b %s\n' "$red" "$reset" "$*" >&2
+	exit 1
+}
 
 assume_yes=no
 
@@ -70,17 +76,42 @@ confirm() {
 	[[ ${resp,,} == s* ]]
 }
 
-snap() { snapper --no-dbus -c "$snapper_config" "$@"; }
+# Usa o snapperd (dbus) quando ele está disponível: com --no-dbus, um
+# snapperd rodando não fica sabendo das mudanças e continua mostrando a
+# lista antiga (a GUI consulta pelo snapperd). --no-dbus só fica de reserva
+# para quando não há dbus/snapperd (chroot, instalador).
+snap_mode=""
+snap() {
+	if [[ -z $snap_mode ]]; then
+		if snapper -c "$snapper_config" get-config >/dev/null 2>&1; then
+			snap_mode=dbus
+		else
+			snap_mode=nodbus
+		fi
+	fi
+	if [[ $snap_mode == dbus ]]; then
+		snapper -c "$snapper_config" "$@"
+	else
+		snapper --no-dbus -c "$snapper_config" "$@"
+	fi
+}
+
+# faz o snapperd reler configs e snapshots alterados fora dele
+snapperd_reload() {
+	[[ -e /var/service/snapperd ]] && sv restart snapperd >/dev/null 2>&1
+	snap_mode=""
+	return 0
+}
 
 #-------------------------------------------------------------------------
 # detecção do ambiente
 #-------------------------------------------------------------------------
 
-is_btrfs()       { [[ $(findmnt -no FSTYPE / 2>/dev/null) == btrfs ]]; }
-root_dev()       { findmnt -no SOURCE / | sed 's/\[.*//'; }
-root_fsroot()    { findmnt -no FSROOT /; }
-has_config()     { [[ -f /etc/snapper/configs/$snapper_config ]]; }
-in_snapshot()    { [[ $(root_fsroot) == "/$snap_subvol/"*/snapshot ]]; }
+is_btrfs() { [[ $(findmnt -no FSTYPE / 2>/dev/null) == btrfs ]]; }
+root_dev() { findmnt -no SOURCE / | sed 's/\[.*//'; }
+root_fsroot() { findmnt -no FSROOT /; }
+has_config() { [[ -f /etc/snapper/configs/$snapper_config ]]; }
+in_snapshot() { [[ $(root_fsroot) == "/$snap_subvol/"*/snapshot ]]; }
 
 # número do snapshot em que o sistema foi bootado (vazio se não estiver num)
 current_snap_num() {
@@ -134,7 +165,10 @@ hook_skip() {
 
 hook_fail() {
 	warn "falha ao criar snapshot: $*"
-	[[ $abort_on_fail == yes ]] && { warn "abortando a transação (abort_on_fail=yes)"; exit 1; }
+	[[ $abort_on_fail == yes ]] && {
+		warn "abortando a transação (abort_on_fail=yes)"
+		exit 1
+	}
 	exit 0
 }
 
@@ -167,11 +201,11 @@ is_important() {
 
 hook_checks() {
 	[[ -n ${VOIDBR_SNAPPER_SKIP:-} ]] && hook_skip "VOIDBR_SNAPPER_SKIP definido"
-	((EUID == 0))                  || hook_skip "não está rodando como root"
-	command -v snapper >/dev/null  || hook_skip "snapper não instalado"
-	is_btrfs                       || hook_skip "o / não é btrfs"
-	has_config                     || hook_skip "config '$snapper_config' do snapper não existe"
-	in_snapshot                    && hook_skip "sistema bootado num snapshot"
+	((EUID == 0)) || hook_skip "não está rodando como root"
+	command -v snapper >/dev/null || hook_skip "snapper não instalado"
+	is_btrfs || hook_skip "o / não é btrfs"
+	has_config || hook_skip "config '$snapper_config' do snapper não existe"
+	in_snapshot && hook_skip "sistema bootado num snapshot"
 }
 
 cmd_pre() {
@@ -434,10 +468,10 @@ cmd_status() {
 	if is_btrfs; then
 		fsroot=$(root_fsroot)
 		case $fsroot in
-			/)                        layout=toplevel ;;
-			"/$root_subvol")          layout=flat ;;
-			"/$snap_subvol/"*/snapshot) layout=snapshot ;;
-			*)                        layout=other ;;
+		/) layout=toplevel ;;
+		"/$root_subvol") layout=flat ;;
+		"/$snap_subvol/"*/snapshot) layout=snapshot ;;
+		*) layout=other ;;
 		esac
 	else
 		fsroot=""
@@ -499,7 +533,10 @@ cfg_get() {
 # resumo do agendamento: off | hourly:N,daily:N,...
 schedule_summary() {
 	local p v out=""
-	[[ $(cfg_get TIMELINE_CREATE) == yes ]] || { echo off; return; }
+	[[ $(cfg_get TIMELINE_CREATE) == yes ]] || {
+		echo off
+		return
+	}
 	for p in hourly daily weekly monthly yearly; do
 		v=$(cfg_get "TIMELINE_LIMIT_${p^^}")
 		[[ $v =~ ^[0-9]+$ ]] && ((v > 0)) && out+="${out:+,}$p:$v"
@@ -609,6 +646,7 @@ cmd_setup() {
 		mkdir /.snapshots
 		mount /.snapshots || die "falha ao montar o $snap_subvol em /.snapshots"
 		chmod 750 /.snapshots
+		snapperd_reload
 		ok "config criada, com o $snap_subvol em /.snapshots"
 	fi
 
@@ -619,9 +657,9 @@ cmd_setup() {
 
 	# 2b. cronie: executa o /etc/cron.hourly/snapper (timeline + limpeza)
 	case $(cron_state) in
-		active)   ok "serviço cronie já ativo" ;;
-		inactive) ln -s /etc/sv/cronie /var/service/ && ok "serviço cronie ativado" ;;
-		missing)  warn "cronie não instalado: sem snapshots periódicos nem limpeza automática" ;;
+	active) ok "serviço cronie já ativo" ;;
+	inactive) ln -s /etc/sv/cronie /var/service/ && ok "serviço cronie ativado" ;;
+	missing) warn "cronie não instalado: sem snapshots periódicos nem limpeza automática" ;;
 	esac
 
 	# 2c. agendamento padrão, só na primeira vez (não sobrescreve o do usuário)
@@ -774,6 +812,9 @@ cmd_restore() {
 
 	umount_top
 
+	# o backup foi registrado direto no info.xml: o snapperd precisa reler
+	snapperd_reload
+
 	# Limine: recopia para a ESP os kernels do @ restaurado
 	if has_limine; then
 		msg "atualizando os kernels e o menu do Limine"
@@ -844,7 +885,10 @@ readonly migrate_mark="var/lib/$app/migrated"
 esp_dir() {
 	local d
 	for d in /boot/efi /efi /boot; do
-		[[ $(findmnt -no FSTYPE "$d" 2>/dev/null) == vfat ]] && { echo "$d"; return; }
+		[[ $(findmnt -no FSTYPE "$d" 2>/dev/null) == vfat ]] && {
+			echo "$d"
+			return
+		}
 	done
 }
 
@@ -925,7 +969,10 @@ cmd_migrate() {
 	local with_home=yes mode="" esp disk ids=() id new mnt m cfg lcfg
 	check_root migrate
 
-	[[ ${1:-} == finish ]] && { cmd_migrate_finish; return; }
+	[[ ${1:-} == finish ]] && {
+		cmd_migrate_finish
+		return
+	}
 
 	migrate_checks
 
@@ -944,8 +991,8 @@ cmd_migrate() {
 		[[ -n $esp ]] || die "sistema UEFI, mas a ESP não está montada"
 		command -v efibootmgr >/dev/null || die "efibootmgr não instalado"
 		while IFS= read -r id; do
-		[[ -n $(find "$esp" -maxdepth 3 -ipath "$esp/efi/$id/grubx64.efi" 2>/dev/null) ]] && ids+=("$id")
-	done < <(grub_efi_ids)
+			[[ -n $(find "$esp" -maxdepth 3 -ipath "$esp/efi/$id/grubx64.efi" 2>/dev/null) ]] && ids+=("$id")
+		done < <(grub_efi_ids)
 		grub_is_removable "$esp" && mode="removable"
 		((${#ids[@]} > 0)) && mode="${mode:+$mode+}id"
 		[[ -n $mode ]] || die "não achei o GRUB na ESP ($esp)"
@@ -961,9 +1008,9 @@ cmd_migrate() {
 	[[ $with_home == no ]] && msg "/home está em outra partição e fica como está"
 	has_limine && msg "Limine em $limine_dest (rootflags=subvol=$root_subvol no limine.conf)"
 	case $mode in
-		none) ;;
-		bios) msg "GRUB BIOS em $disk" ;;
-		*)    msg "GRUB UEFI em $esp$( ((${#ids[@]})) && echo " (id: ${ids[*]})")$([[ $mode == *removable* ]] && echo " + fallback EFI/BOOT")" ;;
+	none) ;;
+	bios) msg "GRUB BIOS em $disk" ;;
+	*) msg "GRUB UEFI em $esp$( ((${#ids[@]})) && echo " (id: ${ids[*]})")$([[ $mode == *removable* ]] && echo " + fallback EFI/BOOT")" ;;
 	esac
 	echo
 	warn "tire um backup (ou snapshot da VM) antes de continuar."
@@ -1021,20 +1068,32 @@ cmd_migrate() {
 
 		msg "instalando o GRUB no novo $root_subvol"
 		if [[ $mode == bios ]]; then
-			chroot "$mnt" grub-install --target=i386-pc "$disk" || { umount -R "$mnt"; die "falha no grub-install"; }
+			chroot "$mnt" grub-install --target=i386-pc "$disk" || {
+				umount -R "$mnt"
+				die "falha no grub-install"
+			}
 		else
 			for id in "${ids[@]}"; do
 				chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
-					--bootloader-id="$id" || { umount -R "$mnt"; die "falha no grub-install ($id)"; }
+					--bootloader-id="$id" || {
+					umount -R "$mnt"
+					die "falha no grub-install ($id)"
+				}
 			done
 			if [[ $mode == *removable* ]]; then
 				chroot "$mnt" grub-install --target=x86_64-efi --efi-directory="$esp" \
-					--removable || { umount -R "$mnt"; die "falha no grub-install --removable"; }
+					--removable || {
+					umount -R "$mnt"
+					die "falha no grub-install --removable"
+				}
 			fi
 		fi
 
 		chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 ||
-			{ umount -R "$mnt"; die "falha no grub-mkconfig"; }
+			{
+				umount -R "$mnt"
+				die "falha no grub-mkconfig"
+			}
 
 		cfg="$mnt/boot/grub/grub.cfg"
 		if ! grep -q "rootflags=subvol=$root_subvol" "$cfg"; then
@@ -1070,7 +1129,7 @@ cmd_migrate_finish() {
 	for e in "$top"/* "$top"/.[!.]*; do
 		[[ -e $e ]] || continue
 		case ${e##*/} in
-			"$root_subvol" | "$home_subvol" | "$snap_subvol") continue ;;
+		"$root_subvol" | "$home_subvol" | "$snap_subvol") continue ;;
 		esac
 		entries+=("$e")
 	done
@@ -1101,70 +1160,105 @@ cmd_migrate_finish() {
 #-------------------------------------------------------------------------
 
 usage() {
-	cat <<EOF
-Uso: $app <comando>
+	local c_title c_cmd c_arg c_dim c_reset
+	if [[ -t 1 ]]; then
+		c_title="$cyan$bold" c_cmd=$green c_arg=$yellow c_dim=$dim c_reset=$reset
+	else
+		c_title="" c_cmd="" c_arg="" c_dim="" c_reset=""
+	fi
 
-  list               lista os snapshots
-  diff [N]           o que mudou na transação do snapshot pre N (padrão: a última)
-  restore [N]        restaura o sistema para o snapshot N
-                     (sem N: o snapshot em que o sistema foi bootado)
-  check [--notify]   avisa se o sistema foi bootado num snapshot
-  create [DESCRIÇÃO]  cria um snapshot manual
-  delete N [N...]    apaga snapshots
-  status             estado do sistema (chave=valor)
-  setup              cria a config do snapper e libera o grupo wheel
-  schedule [show]    mostra o agendamento dos snapshots periódicos
-  schedule off       desliga os snapshots periódicos (a limpeza continua)
-  schedule daily 7 [weekly 4 ...]
-                     guarda N snapshots por período (hourly, daily, weekly, monthly, yearly)
-  migrate            converte o / da raiz do btrfs para o layout @/@home/@snapshots
-  migrate finish     depois do reboot: apaga o sistema antigo da raiz do btrfs
-  limine-entries UUID "CMDLINE"
-                     submenu de snapshots do Limine (usado pelo update-limine)
+	# alinha pelo texto puro e só depois aplica as cores
+	cmdline() {
+		local cmd=$1 args=$2 desc=$3 plain pad
+		plain="$cmd${args:+ $args}"
+		pad=$((22 - ${#plain}))
+		if ((pad < 1)); then
+			printf '  %b%s%b%s%b\n' "$c_cmd" "$cmd" "$c_arg" "${args:+ $args}" "$c_reset"
+			printf '  %24s%s\n' "" "$desc"
+		else
+			printf '  %b%s%b%s%b%*s  %s\n' "$c_cmd" "$cmd" "$c_arg" "${args:+ $args}" "$c_reset" "$pad" "" "$desc"
+		fi
+	}
+	title() { printf '\n%b%s%b\n' "$c_title" "$1" "$c_reset"; }
 
-Chamados pelos hooks do voidbr-xbps:
-  pre                snapshot antes da transação
-  post               snapshot depois da transação
+	printf '%bUso:%b %s %b<comando>%b [opções]\n' "$c_title" "$c_reset" "$app" "$c_arg" "$c_reset"
 
-Se uma atualização quebrar o sistema:
-  1. no menu de boot, entre nos snapshots e escolha o "pre" da atualização
-  2. sudo $app restore
-  3. reinicie e entre no sistema normal
+	title "Consulta"
+	cmdline list "" "lista os snapshots"
+	cmdline diff "[N]" "o que mudou na transação do pre N (padrão: a última)"
+	cmdline status "" "estado do sistema (chave=valor)"
+	cmdline check "[--notify]" "avisa se o sistema foi iniciado num snapshot"
 
-Opções:
-  --yes              não pergunta nada (restore não reinicia sozinho)
-  --csv              com list: saída em CSV (usada pela GUI)
+	title "Snapshots"
+	cmdline create "[DESCRIÇÃO]" "cria um snapshot manual"
+	cmdline delete "N [N...]" "apaga snapshots"
+	cmdline restore "[N]" "restaura o sistema para o snapshot N"
+	printf '  %24s%b%s%b\n' "" "$c_dim" "(sem N: o snapshot em que o sistema foi iniciado)" "$c_reset"
 
-Para pular o snapshot numa transação:
-  sudo VOIDBR_SNAPPER_SKIP=1 xbps-install ...
-EOF
+	title "Configuração"
+	cmdline setup "" "cria a config do snapper, ativa o cronie e o grub-btrfs"
+	cmdline schedule "[show]" "mostra o agendamento dos snapshots periódicos"
+	cmdline schedule "daily 7 [weekly 4]" "guarda N por período (hourly, daily, weekly, monthly, yearly)"
+	cmdline schedule "off" "desliga os periódicos (a limpeza continua)"
+	cmdline migrate "" "converte o / da raiz do btrfs para @/@home/@snapshots"
+	cmdline migrate "finish" "depois do reboot: apaga o sistema antigo da raiz"
+
+	title "Uso interno"
+	cmdline pre "" "snapshot antes da transação (hook do voidbr-xbps)"
+	cmdline post "" "snapshot depois da transação (hook do voidbr-xbps)"
+	cmdline limine-entries 'UUID "CMDLINE"' "submenu de snapshots do Limine (update-limine)"
+	cmdline limine-refresh "" "refaz o menu do Limine (cron diário)"
+
+	title "Opções"
+	cmdline --yes "" "não pergunta nada (restore não reinicia sozinho)"
+	cmdline --csv "" "com list: saída em CSV (usada pela GUI)"
+
+	title "Se uma atualização quebrar o sistema"
+	printf '  %b1.%b no menu de boot, entre nos snapshots e escolha o "pre" da atualização\n' "$c_arg" "$c_reset"
+	printf '  %b2.%b %bsudo %s restore%b\n' "$c_arg" "$c_reset" "$c_cmd" "$app" "$c_reset"
+	printf '  %b3.%b reinicie e entre no sistema normal\n' "$c_arg" "$c_reset"
+
+	title "Pular o snapshot numa transação"
+	printf '  %bsudo VOIDBR_SNAPPER_SKIP=1 xbps-install ...%b\n' "$c_cmd" "$c_reset"
 }
 
 args=()
 list_csv=no
 for a in "$@"; do
 	case $a in
-		--yes) assume_yes=yes ;;
-		--csv) list_csv=yes ;;
-		*)     args+=("$a") ;;
+	--yes) assume_yes=yes ;;
+	--csv) list_csv=yes ;;
+	*) args+=("$a") ;;
 	esac
 done
 set -- "${args[@]}"
 
 case ${1:-} in
-	pre)     cmd_pre ;;
-	post)    cmd_post ;;
-	list)    if [[ $list_csv == yes ]]; then cmd_list_csv; else cmd_list; fi ;;
-	diff)    cmd_diff "${2:-}" ;;
-	restore) cmd_restore "${2:-}" ;;
-	check)   cmd_check "${2:-}" ;;
-	create)  shift; cmd_create "$*" ;;
-	delete)  shift; cmd_delete "$@" ;;
-	status)  cmd_status ;;
-	setup)   cmd_setup ;;
-	migrate) cmd_migrate "${2:-}" ;;
-	limine-entries) shift; cmd_limine_entries "$@" ;;
-	limine-refresh) cmd_limine_refresh ;;
-	schedule) shift; cmd_schedule "$@" ;;
-	*)       usage ;;
+pre) cmd_pre ;;
+post) cmd_post ;;
+list) if [[ $list_csv == yes ]]; then cmd_list_csv; else cmd_list; fi ;;
+diff) cmd_diff "${2:-}" ;;
+restore) cmd_restore "${2:-}" ;;
+check) cmd_check "${2:-}" ;;
+create)
+	shift
+	cmd_create "$*"
+	;;
+delete)
+	shift
+	cmd_delete "$@"
+	;;
+status) cmd_status ;;
+setup) cmd_setup ;;
+migrate) cmd_migrate "${2:-}" ;;
+limine-entries)
+	shift
+	cmd_limine_entries "$@"
+	;;
+limine-refresh) cmd_limine_refresh ;;
+schedule)
+	shift
+	cmd_schedule "$@"
+	;;
+*) usage ;;
 esac
