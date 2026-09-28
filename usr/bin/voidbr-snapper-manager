@@ -273,7 +273,8 @@ efi_loader_of() {
 #  - em UEFI, o BootCurrent do efibootmgr aponta a entrada usada; o .efi dela
 #    (ou o fallback EFI/BOOT/BOOTX64.EFI, quando a entrada é o disco) é
 #    identificado pelo conteúdo;
-#  - em BIOS sem BOOT_IMAGE, sobra o Limine se ele estiver instalado.
+#  - sem BOOT_IMAGE não foi o GRUB: se o Limine estiver instalado, foi ele
+#    (é o caso do BIOS, onde não há BootCurrent para consultar).
 booted_loader() {
 	local cur path esp f l
 	if grep -q 'BOOT_IMAGE=' /proc/cmdline 2>/dev/null; then
@@ -292,7 +293,7 @@ booted_loader() {
 			[[ -n $l ]] && { echo "$l"; return; }
 		fi
 	fi
-	has_limine && ! has_grub && { echo limine; return; }
+	has_limine && { echo limine; return; }
 	echo unknown
 }
 
@@ -541,6 +542,7 @@ cmd_status() {
 		hooks=$hooks
 		migrate=$migrate
 		bootloader=$(booted_loader)
+		firmware=$([[ -d /sys/firmware/efi ]] && echo uefi || echo bios)
 		bootloaders=${bl:-none}
 		cron=$(cron_state)
 		schedule=$sched

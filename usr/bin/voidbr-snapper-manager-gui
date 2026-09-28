@@ -12,8 +12,8 @@
 #   All rights reserved.
 #
 #   ChangeLog:
-#   - v0.6.2 (2026-09-28): Rodapé mostra os bootloaders instalados e qual
-#     deles iniciou o sistema (🥾 boot: grub/limine).
+#   - v0.6.2 (2026-09-28): Rodapé mostra os bootloaders instalados: o que
+#     iniciou o sistema em verde (✅) com o modo (UEFI/BIOS), o outro apagado (○).
 #   - v0.6.0 (2026-09-27): Menu "⏰ Agendamento" (snapshots periódicos pelo
 #     timeline do snapper) e estado do cronie no rodapé.
 #   - v0.5.0 (2026-09-26): Suporte ao Limine no rodapé (bootloader detectado);
@@ -573,28 +573,38 @@ class JanelaSnapperManager(Gtk.ApplicationWindow):
 
         bl = st.get("bootloaders", "none")
         boot = st.get("bootloader", "unknown")
+        esc = GLib.markup_escape_text
         partes = [
-            f"📍 Sistema: {st.get('fsroot') or '-'}",
-            f"{ok(st.get('config') == 'yes')} snapper",
-            f"{ok(st.get('hooks') == 'yes')} hooks xbps",
+            esc(f"📍 Sistema: {st.get('fsroot') or '-'}"),
+            esc(f"{ok(st.get('config') == 'yes')} snapper"),
+            esc(f"{ok(st.get('hooks') == 'yes')} hooks xbps"),
         ]
-        if "grub" in bl:
-            partes.append({"active": "✅ grub-btrfs ativo", "inactive": "⚠️ grub-btrfs inativo",
-                           "missing": "❌ grub-btrfs ausente"}.get(st.get("grub_btrfs", ""),
-                                                                "❓ grub-btrfs"))
-        if "limine" in bl:
-            partes.append("✅ limine")
+
+        # bootloaders instalados: o que iniciou o sistema em verde com ✅,
+        # o outro apagado (os menus dos dois continuam sendo gerados)
+        for nome in ("grub", "limine"):
+            if nome not in bl:
+                continue
+            texto = nome
+            if nome == "grub" and st.get("grub_btrfs") != "active":
+                texto += {"inactive": " (grub-btrfs inativo)",
+                          "missing": " (grub-btrfs ausente)"}.get(st.get("grub_btrfs", ""), "")
+            if nome == boot:
+                fw = st.get("firmware", "").upper()
+                texto = f"{nome} {fw}".strip() + texto[len(nome):]
+                partes.append(f"<span foreground='#34d399' weight='bold'>✅ {esc(texto)}</span>")
+            else:
+                partes.append(f"<span foreground='#6b7280'>○ {esc(texto)}</span>")
         if bl == "none":
-            partes.append("❓ bootloader")
-        if boot in ("grub", "limine"):
-            partes.append(f"🥾 boot: {boot}")
+            partes.append(esc("❓ bootloader"))
+
         cron_ok = st.get("cron") == "active"
         partes += [
-            f"{'⏰' if cron_ok else '❌'} {resumo_agendamento(st.get('schedule'))}"
-            + ("" if cron_ok else " (cronie inativo)"),
-            f"💾 {st.get('disk_used', '?')} de {st.get('disk_size', '?')}",
+            esc(f"{'⏰' if cron_ok else '❌'} {resumo_agendamento(st.get('schedule'))}"
+                + ("" if cron_ok else " (cronie inativo)")),
+            esc(f"💾 {st.get('disk_used', '?')} de {st.get('disk_size', '?')}"),
         ]
-        self.label_status.set_text("   •   ".join(partes))
+        self.label_status.set_markup("   •   ".join(partes))
 
     # -- diálogos ----------------------------------------------------------
 
